@@ -294,7 +294,7 @@ public class SignalOverlay {
     private static final Building[] bestSrcTmp = new Building[1];
     private static final String[] bestCodeTmp = new String[1];
 
-    /** 每格最大有效信号（一次遍历所有信道，与卫星层取 max）；返回有效强度、最强来源与最强卫星编码。
+    /** 每格最大有效信号（一次遍历所有信道，与卫星层 RSS 功率合成）；返回有效强度、最强来源与最强卫星编码。
      *  卫星层模型与绑定/中继一致（SINR 比值制）：覆盖该格的卫星各自按信噪比折算有效强度
      *  （satelliteEffAt，底噪在质量因子内）后对数叠加（stackEff），不再末尾扣底噪 */
     static float bestSignal(Team team, float wx, float wy, Building[] bestSrcOut, String[] bestCodeOut) {
@@ -308,6 +308,7 @@ public class SignalOverlay {
                 bestSrc = srcBuf[ch];
             }
         }
+        float groundStr = bestStr; // 地面层合成前强度（RSS 合成保留双方功率，着色归属按贡献较大方）
         // 卫星层：覆盖该格的在轨卫星各自按信噪比折算有效强度（底噪在质量因子内）、对数叠加；
         // 记录最强贡献者的编码用于着色。
         // 上行门控：有编码的卫星在其地面源全部消失后停止广播（未绑定记录无编码语义，仍提供原始覆盖）
@@ -324,12 +325,15 @@ public class SignalOverlay {
             }
         }
         float satStr = Math.max(0f, SatelliteManager.stackEff(satSum, satBest));
-        if (satStr > bestStr) {
-            bestStr = satStr;
-            bestSrc = null; // 卫星层
+        // 卫星×地面 RSS 功率合成：total = √(g² + s²)——同信道功率相加，卫星对已有地面覆盖的
+        // 区域仍是真实增益（抗干扰裕度实质提升），不再是"地面弱时的替补"。
+        // 着色归属保持贡献较大的一方：地面=建筑专属色，卫星=编码色（未绑定蓝渐变）
+        bestStr = (float) Math.sqrt((double) groundStr * groundStr + (double) satStr * satStr);
+        if (satStr > groundStr) {
+            bestSrc = null; // 卫星层贡献占优
             bestCodeOut[0] = satTop; // 最强贡献卫星的编码（未绑定记录为 null → 蓝渐变）
         } else {
-            bestCodeOut[0] = null; // 地面层获胜（或全零）：编码出参清空
+            bestCodeOut[0] = null; // 地面层占优（或全零）：编码出参清空
         }
         bestSrcOut[0] = bestSrc;
         return bestStr;

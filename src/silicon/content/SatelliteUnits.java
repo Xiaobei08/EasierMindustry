@@ -22,9 +22,11 @@ import silicon.util.OrbitSatelliteController;
  * <p>
  * 隔离旗标（全部为 v159.7 引擎现成字段，见各注释）：
  * - targetable/hittable = false：所有索敌查询（Units.java:156/304/326 的 targetable 过滤）
- *   与所有伤害路径（Damage.java 系列的 hittable 过滤）对卫星完全失明——地面单位无法攻击卫星；
- *   且 UnitComp.collides() 就是 hittable()（UnitComp.java:431-435），EntityCollisions.java:162
- *   的双向与门使卫星与任何实体（含其他卫星、空中单位）零碰撞事件——不推挤、不挡路。
+ *   与所有伤害路径（Damage.java 系列的 hittable 过滤）对卫星完全失明——地面单位无法攻击卫星，
+ *   子弹直接穿透（UnitComp.collides() 就是 hittable()，只管命中事件，不管物理推挤）。
+ * - physics = false：退出异步物理系统（PhysicsProcess.begin 的 type.physics 过滤）——
+ *   单位间推挤由 layerFlying/layerGround 物理体实现，与 hittable 无关；不加此旗标卫星
+ *   会被编入 flying 物理层与飞行单位互相推挤（实测过的坑）。
  * - playerControllable = false：控制器永远走 aiController（UnitType.java:281），
  *   isCommandable() 恒假（非 CommandAI）→ 玩家框选/指挥无法改变其位置。
  * - logicControllable = false：逻辑处理器不可操控。
@@ -100,6 +102,9 @@ public class SatelliteUnits {
                 // —— 索敌/伤害/物理全隔离（详见类注释）——
                 targetable = false;
                 hittable = false;
+                physics = false; // 退出异步物理系统（PhysicsProcess.begin 按 type.physics 过滤）：
+                                 // 单位间推挤在 layerFlying 物理体间发生，与 hittable 无关——
+                                 // 不加此旗标卫星会被编入 flying 物理层，与飞行单位互相推挤
                 killable = true; // 保留 scripted 击落能力
                 playerControllable = false;
                 logicControllable = false;

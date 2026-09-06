@@ -7,17 +7,31 @@ import mindustry.gen.Building;
 import silicon.util.SatelliteManager;
 
 /**
- * 信道信号统一计算（干扰模型 1~7、13）：
- * - 环境底噪/热噪声（含噪声系数）：固定底噪 N0，信号低于视为无信号
+ * 信道信号统一计算（SINR 比值制）：
+ * - 环境底噪/热噪声（含噪声系数）：固定底噪 N0，参与信噪比分母
  * - 同信道干扰（CCI）：最强源为目标，其余同信道源强度之和为干扰
  * - 邻信道干扰（ACI）：其他信道源强度 × ACIR 泄漏系数
- * - 同信道/全信道干扰器：干扰强度（与信号同模型衰减）直接叠加
- * - 邻信道干扰器泄漏：干扰器对邻信道的泄漏（ACIR_jam）
- * 有效信号 = 最强信号 − 干扰总量；≤ 0 → 无信号。
+ * - 同信道/全信道干扰器：干扰强度（与信号同模型衰减）直接叠加；邻信道泄漏（ACIR_jam）
+ * - 有效强度 = 信号功率 × 质量因子(SINR)：SINR = best / (N0 + 干扰总和)
+ *   SINR ≤ 1（功率压不过噪声+干扰）→ 无信号；SINR ≥ SINR_REF → 满质量；中间平滑。
+ *   干扰压的是信噪比（比值），不是从幅度扣功率——强信号天然抗弱干扰。
  */
 public class SignalChannel {
-    /** 底噪（强度域 0~15，含噪声系数；低于此视为无信号） */
+    /** 底噪（强度域 0~15，含噪声系数；SINR 分母的固定项） */
     public static final float NOISE_FLOOR = 0.5f;
+    /** SINR 参考阈值：SINR ≥ 此值（≈5.4dB）满质量——校准使 GEO 单星 0.53 / LEO 单星 1.2，
+     *  与旧线性制的激活阈值（>0.5）与边缘绑定行为对齐 */
+    public static final float SINR_REF = 3.5f;
+
+    /** SINR → 质量因子：sinr ≤ 1 → 0（无信号）；sinr ≥ {@link #SINR_REF} → 1（满质量）；中间线性平滑。
+     *  有效强度 = 信号功率 × 质量因子；eff > 0 ⟺ 信号功率 > 底噪+干扰（物理可检测的唯一定义） */
+    public static float sinrQuality(float signal, float interference) {
+        if (signal <= 0f) return 0f;
+        float sinr = signal / Math.max(interference, 1e-4f);
+        float q = (sinr - 1f) / (SINR_REF - 1f);
+        return Math.max(0f, Math.min(1f, q));
+    }
+
     /** 邻信道泄漏系数 ACIR：Δch=0 → 1（本信道），1 → 0.25，2 → 0.08，≥3 → 0（忽略） */
     public static float acir(int dch) {
         int d = Math.abs(dch);
@@ -194,9 +208,10 @@ public class SignalChannel {
                 if (c < SignalJammer.CHANNEL_MAX - 1) jamA[c + 2] += j * acirJam(2);
             }
         }
-        // 每信道有效信号 = 最强 − (底噪 + CCI + ACI + 干扰器)
+        // 每信道有效信号 = 信号功率 × 质量因子(SINR)：干扰压信噪比，不从幅度扣功率
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
-            effOut[ch] = Math.max(0f, bestA[ch] - (NOISE_FLOOR + otherA[ch] + aciA[ch] + jamA[ch]));
+            float i = NOISE_FLOOR + otherA[ch] + aciA[ch] + jamA[ch];
+            effOut[ch] = bestA[ch] * sinrQuality(bestA[ch], i);
             srcOut[ch] = bestSrcA[ch];
         }
     }

@@ -346,14 +346,23 @@ public class SatelliteManager {
 
     // —— 卫星信号语义（覆盖/强度/干扰）——
 
-    /** 单条记录在 (wx,wy) 处的有效强度：星下点覆盖圆内为该轨道的原始强度（LEO 1.5 / MEO 1.3 / GEO 1.1 / SSO 1.5），
-     *  减去其固化信道的干扰强度；信道未固化（-1，发射时编码无地面源）则不可被信道干扰——"在轨广播"的物理化 */
+    /** 单条记录在 (wx,wy) 处的有效强度（SINR 比值制）：星下点覆盖圆内原始强度（LEO 1.5 / MEO 1.3 / GEO 1.1 / SSO 1.5）
+     *  × 质量因子——SINR = raw / (底噪 + 其固化信道干扰)，SINR ≤ 1（功率压不过噪声+干扰）即无信号；
+     *  信道未固化（-1，发射时编码无地面源）则不受信道干扰——"在轨广播"的物理化。
+     *  供绑定判定（>0）、覆盖绘制聚合与叠星共用 */
     public static float satelliteEffAt(SatelliteRecord r, float wx, float wy) {
+        float raw = satelliteRawAt(r, wx, wy);
+        if (raw <= 0f) return 0f;
+        float jam = r.channel >= 1 ? SignalJammer.strengthAt(r.channel, wx, wy) : 0f;
+        return raw * SignalChannel.sinrQuality(raw, SignalChannel.NOISE_FLOOR + jam);
+    }
+
+    /** 单条记录在 (wx,wy) 处的原始强度（未折算干扰）：覆盖圆内为该轨道定值，圆外 0 */
+    public static float satelliteRawAt(SatelliteRecord r, float wx, float wy) {
         Unit u = Groups.unit.getByID(r.unitId);
         if (u == null) return 0f;
         if (!u.within(wx, wy, coverageRadius(r.orbit))) return 0f;
-        float jam = r.channel >= 1 ? SignalJammer.strengthAt(r.channel, wx, wy) : 0f;
-        return Math.max(0f, satelliteStrength(r.orbit) - jam);
+        return satelliteStrength(r.orbit);
     }
 
     /** 对数叠加：最强一星全额计入，其余星合并贡献 ln(1+Σ其余)——叠星仍有收益但边际递减；
@@ -365,10 +374,12 @@ public class SatelliteManager {
     }
 
     /**
-     * 指定编码的卫星信号在 (wx,wy) 处的有效强度：覆盖该点且编码匹配的卫星各自扣同信道干扰后
-     * 按对数叠加（最强一星全额，其余合并贡献 ln(1+Σ其余)），再扣底噪（NOISE_FLOOR）——
-     * 首颗卫星有效强度按轨道 1.0/0.8/0.6（LEO/MEO/GEO），均超过中继器激活阈值（>0.5），
-     * 单星即可让覆盖圆内的中继器转发；叠星按对数提升抗干扰裕度（边际递减，堆星收益不再是线性）。
+     * 指定编码的卫星信号在 (wx,wy) 处的有效强度（SINR 比值制）：覆盖该点且编码匹配的卫星
+     * 各自按信噪比折算有效强度（{@link #satelliteEffAt}），再对数叠加（最强一星全额，其余合并
+     * 贡献 ln(1+Σ其余)）——底噪已在每星质量因子内，不再末尾扣减。
+     * 干扰压制语义：该编码功率 ≤ 底噪+同信道干扰（SINR ≤ 1）即无信号；随 SINR 升至 3.5 达满质量。
+     * 净空单星有效强度：LEO 1.2 / MEO 0.83 / GEO 0.53，均超过中继器激活阈值（>0.5），
+     * 单星即可让覆盖圆内的中继器转发；叠星按对数提升抗干扰裕度（边际递减）。
      * code 必须 non-null（中继器按编码判定；全量聚合在绘制层内联，共用 {@link #stackEff}）。
      */
     public static float satelliteStrengthAt(Team team, String code, float wx, float wy) {
@@ -384,7 +395,7 @@ public class SatelliteManager {
             sum += e;
             if (e > max) max = e;
         }
-        return Math.max(0f, stackEff(sum, max) - SignalChannel.NOISE_FLOOR);
+        return Math.max(0f, stackEff(sum, max));
     }
 
     /** 某队伍待发射卫星数（客机读广播镜像，权威端读登记列表） */

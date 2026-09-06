@@ -67,17 +67,18 @@ public class SignalSource extends Block {
 
     /**
      * 以 (cx, cy) 为信号源中心、指定世界坐标 (wx, wy) 处的信号强度（世界坐标为像素，1 格 = 8px）。
-     * 覆盖半径外（无信号区域）强度为 0；覆盖内按正态分布（高斯）衰减：
-     * 中心最强（15），随距离按 exp(-d²/2σ²) 衰减，边缘趋近 0。
+     * 覆盖半径外（无信号区域）强度为 0；覆盖内按归一化正态分布衰减：
+     * 中心最强（15），随距离平滑衰减，半径 R 处精确归零（无悬崖断环）。
      * 通用方法：信号源与信号中继器共用。
      */
     public static float strengthAt(float cx, float cy, float wx, float wy) {
         float dist = Mathf.dst(wx, wy, cx, cy) / 8f; // 像素 → 格
-        if (dist > RADIUS) return 0f; // 无信号区域强度为 0
-        // 正态分布衰减：σ = 6 格（过渡平缓），半径 15 格处强度趋近 0
+        if (dist >= RADIUS) return 0f; // 无信号区域强度为 0
+        // 正态分布衰减：σ = 6 格；减去边缘值并归一化，使 R 处精确为 0（消除旧版 0.66 的悬崖断环）
         float sigma = 6f;
-        float gaussian = (float) Math.exp(-(dist * dist) / (2f * sigma * sigma));
-        return MAX_STRENGTH * gaussian;
+        float g = (float) Math.exp(-(dist * dist) / (2f * sigma * sigma));
+        float edge = (float) Math.exp(-(RADIUS * RADIUS) / (2f * sigma * sigma));
+        return MAX_STRENGTH * (g - edge) / (1f - edge);
     }
 
     /**

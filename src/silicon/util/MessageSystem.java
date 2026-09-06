@@ -169,7 +169,10 @@ public class MessageSystem {
      * @apiNote 内部联网用
      */
     public static boolean isLifecycleAuthority() {
-        return Vars.net != null && Vars.net.server() && !Vars.net.client();
+        // 房主的 net.client() 与 net.server() 同源（本 fork 中 client()==!server()&&active()），
+        // 仅用 server&&!client 会把房主误判为生命周期权威；必须再排除非 headless（房主有本地面板，
+        // 瞬时消息生命周期由面板本地管理，与成员一致）。
+        return Vars.headless && Vars.net != null && Vars.net.server();
     }
 
     /** 按显示索引读取一条消息（0 = 顶部最新）。 */
@@ -327,8 +330,11 @@ public class MessageSystem {
 
     /** 应用服务器广播的「新增」：按优先级插入本地镜像。随后按<b>本进程自己的</b>上限本地剔除
      *  （剔除只影响本地面板，不向外广播——各玩家面板上限互不影响）。
+     *  <p><b>按 uid 幂等</b>：房主进程已由权威 {@link #add(Message)} 本地登记过，广播层的自回环
+     *  防护出现偏差时，这里也必须防住重复插入（重复消息会导致已读/到期/移除行为错乱）。
      *  @apiNote 内部联网用，仅 MessageSync 调用 */
     public void applyNetAdd(Message m) {
+        if (m == null || m.uid < 0 || byUid(m.uid) != null) return;
         int at = insertIndexFor(m.priority);
         data.insert(at, m);
         for (Listener l : listeners) l.messageAdded(m, at);

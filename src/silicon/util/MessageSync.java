@@ -196,12 +196,13 @@ public class MessageSync implements MessageSystem.Listener {
         // 每个进程在世界加载时都自行清空；面板清空按钮只影响操作者本地视图。无需广播 CLEAR。
     }
 
-    /** 把单条消息事件按同队/全局可见性分发给各客户端连接（OP_ADD/OP_UPDATE 发全量记录，键不外发）。 */
+    /** 把单条消息事件按同队/全局可见性分发给各客户端连接（OP_ADD/OP_UPDATE 发全量记录，键不外发）。
+     *  跳过房主自己的本地连接：房主进程已由权威 {@code add()} 本地登记过，回环广播只会让房主面板重复插入。 */
     private static void push(Message m, byte op) {
         if (!net.server() || m == null) return;
         byte[] data = record(op, m, false);
         for (Player p : Groups.player) {
-            if (p.con == null || !m.visibleTo(p.team())) continue;
+            if (p == Vars.player || p.con == null || !m.visibleTo(p.team())) continue;
             Call.clientBinaryPacketReliable(p.con, PACKET, data);
         }
     }
@@ -221,9 +222,9 @@ public class MessageSync implements MessageSystem.Listener {
                 m.lastSyncTime = now;
                 byte[] data = record(OP_UPDATE, m, false);
                 for (Player p : Groups.player) {
-                    if (p.con != null && m.visibleTo(p.team())) {
-                        Call.clientBinaryPacketReliable(p.con, PACKET, data);
-                    }
+                    // 同样跳过房主本地玩家：其持续型消息由本地面板直接用权威对象渲染
+                    if (p == Vars.player || p.con == null || !m.visibleTo(p.team())) continue;
+                    Call.clientBinaryPacketReliable(p.con, PACKET, data);
                 }
             }
         }
@@ -244,9 +245,10 @@ public class MessageSync implements MessageSystem.Listener {
         }
     }
 
-    /** 中途加入的玩家：补发当前可见消息全量（尊重同队/全局过滤；瞬时跳过已过期的，只补仍在 TTL 内的）。 */
+    /** 中途加入的玩家：补发当前可见消息全量（尊重同队/全局过滤；瞬时跳过已过期的，只补仍在 TTL 内的）。
+     *  房主自己的加入不补发——其本地消息已在权威登记时入库。 */
     private static void replayTo(Player p) {
-        if (!net.server() || p == null || p.con == null) return;
+        if (!net.server() || p == null || p == Vars.player || p.con == null) return;
         int count = 0;
         for (Message m : MessageSystem.instance.all()) {
             if (m.visibleTo(p.team()) && replayable(m)) count++;

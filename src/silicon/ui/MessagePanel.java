@@ -8,18 +8,23 @@ import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.TextureRegion;
 import arc.math.Interp;
 import arc.math.Mathf;
+import arc.input.KeyCode;
 import arc.math.geom.Vec2;
 import arc.scene.Action;
 import arc.scene.Element;
 import arc.scene.Group;
 import arc.scene.actions.Actions;
+import arc.scene.event.InputEvent;
 import arc.scene.event.Touchable;
 import arc.scene.style.Drawable;
 import arc.scene.style.Style;
 import arc.scene.style.TextureRegionDrawable;
+import arc.scene.ui.Button;
+import arc.scene.ui.Image;
 import arc.scene.ui.ImageButton;
 import arc.scene.ui.Label;
 import arc.scene.ui.ScrollPane;
+import arc.scene.ui.Tooltip;
 import arc.scene.ui.layout.Table;
 import arc.struct.ObjectMap;
 import arc.struct.ObjectSet;
@@ -613,6 +618,19 @@ public class MessagePanel extends Table implements MessageSystem.Listener {
         return null;
     }
 
+    /** 手动把某消息标记为已读：收起态点击小方块触发。已读后取消未读高亮并开始时限倒计时（瞬时型消息）。 */
+    private void markRead(Message m) {
+        if (m == null) {
+            return;
+        }
+        if (this.readMessages.add(m)) {
+            MessageRow r = this.findRow(m);
+            if (r != null) {
+                r.read = true;
+            }
+        }
+    }
+
     private void scrollToTopSoon() {
         this.scrollToTopPending = true;
     }
@@ -949,19 +967,95 @@ public class MessagePanel extends Table implements MessageSystem.Listener {
         boolean collapsing = false;
         /** 收起切换动画已播放时长（秒）。 */
         float collapseTime = 0.0f;
+        /** 收起态悬停提示（仅收起态触发，样式参考游戏内选项的悬浮文本提示）。 */
+        private Tooltip tooltip;
+        /** 悬停提示中的标题标签（持续型消息标题实时变化时同步刷新）。 */
+        private Label tooltipLabel;
+        /** 收起态铺满小方块的交互按钮：透明底，承载悬停提示与「点击=已读」。逐帧对齐方块边界。 */
+        private Button squareBtn;
 
         MessageRow(Message msg) {
             this.msg = msg;
             this.setTransform(true);
+            // 先建 tooltip，后重建内容：收起态重建需要把 tooltip 挂到按钮上
+            this.setupTooltip();
             this.rebuildContent();
+        }
+
+        /** 创建收起态悬停提示：光标放在小方块上即显示该消息标题。 */
+        private void setupTooltip() {
+            this.tooltip = new Tooltip(t -> {
+                t.background(Styles.black8);
+                t.touchable = Touchable.disabled;
+                t.margin(4.0f);
+                String title = this.msg.currentTitle();
+                this.tooltipLabel = new Label(title != null ? title : "", Styles.outlineLabel);
+                this.tooltipLabel.setColor(this.msg.titleColor);
+                this.tooltipLabel.setWrap(true);
+                t.add(this.tooltipLabel).width(280.0f).left();
+            }) {
+                @Override
+                public boolean touchDown(InputEvent event, float x, float y, int pointer, KeyCode button) {
+                    // 不消费点击：避免吞掉消息行的 onClick
+                    return false;
+                }
+
+                @Override
+                protected void setContainerPosition(Element element, float x, float y) {
+                    // 与 UI$3 一致：把提示锚定到目标元素左上角（排除鼠标跟随定位导致的显示问题）
+                    this.targetActor = element;
+                    if (element.getScene() == null) {
+                        return;
+                    }
+                    this.container.pack();
+                    arc.math.geom.Vec2 pos = element.localToStageCoordinates(new arc.math.geom.Vec2().set(0.0f, 0.0f));
+                    this.container.setPosition(pos.x, pos.y, arc.util.Align.topLeft);
+                    this.container.setOrigin(0.0f, element.getHeight());
+                }
+
+                @Override
+                public void enter(InputEvent event, float x, float y, int pointer, Element fromActor) {
+                    // 仅收起态（小方块）悬停时显示；移除/到期中的行不提示
+                    if (!MessageRow.this.collapsed || MessageRow.this.removing || MessageRow.this.expired) {
+                        return;
+                    }
+                    super.enter(event, x, y, pointer, fromActor);
+                }
+
+                @Override
+                public void exit(InputEvent event, float x, float y, int pointer, Element toActor) {
+                    super.exit(event, x, y, pointer, toActor);
+                }
+            };
+        }
+
+        @Override
+        public boolean remove() {
+            // 行被移除/重建时若提示仍显示则立即隐藏（exit 事件不一定触发）
+            if (this.tooltip != null) {
+                this.tooltip.hide();
+            }
+            return super.remove();
         }
 
         @Override
         public void act(float delta) {
             super.act(delta);
+            // 收起态：非单元格子项不受 Table 布局管理，逐帧对齐方块位置与尺寸，保证按钮与小方块完全一致
+            if (this.collapsed && this.squareBtn != null) {
+                this.squareBtn.setPosition(0.0f, 0.0f);
+                this.squareBtn.setSize(this.getWidth(), this.getHeight());
+            }
             // 持续型消息：内容/属性由消息源提供，每帧刷新以支持实时数据更新
             if (this.msg.type == MessageType.PERSISTENT) {
                 this.refreshLive();
+            }
+            // 收起态：同步刷新悬停提示标题（持续型消息标题可实时变化）
+            if (this.collapsed && this.tooltipLabel != null) {
+                String t = this.msg.currentTitle();
+                if (t != null && !t.equals(this.tooltipLabel.getText().toString())) {
+                    this.tooltipLabel.setText(t);
+                }
             }
         }
 
@@ -1086,18 +1180,34 @@ public class MessagePanel extends Table implements MessageSystem.Listener {
                 this.entering = false;
                 this.enterTime = 0f;
                 this.color.a = 1f;
+                // 切回展开态：收起小方块的悬停提示已无用，立即隐藏
+                this.tooltip.hide();
             }
         }
 
         /** 重建行内内容：收起 = 居中图标；展开 = 标题/内容 + 右侧图标。 */
         private void rebuildContent() {
             this.clear();
+            this.squareBtn = null;
             this.titleLabel = null;
             this.contentLabel = null;
             this.lastFill = null;
             if (this.collapsed) {
+                // 收起态：方块底色画在行上，图标与交互由铺满整方格的按钮负责（非单元格子项，逐帧对齐方块位置/尺寸）。
+                // 按钮承载悬停提示（Tooltip 挂按钮上，与标题栏切换按钮同一机制）与「点击=已读」。
                 this.background(tintStatic(this.msg.bubbleColor.r, this.msg.bubbleColor.g, this.msg.bubbleColor.b, this.msg.bubbleColor.a));
-                this.image(this.msg.icon).size(ICON_SIZE).center();
+                Button.ButtonStyle style = new Button.ButtonStyle();
+                style.up = tintStatic(1.0f, 1.0f, 1.0f, 0.0f);     // 平时透明，露出方块底色
+                style.over = tintStatic(1.0f, 1.0f, 1.0f, 0.22f);  // 悬停微微提亮，兼作 hover 反馈
+                style.down = tintStatic(1.0f, 1.0f, 1.0f, 0.35f);
+                this.squareBtn = new Button(style);
+                this.squareBtn.touchable = Touchable.enabled;
+                this.squareBtn.clicked(() -> MessagePanel.instance().markRead(MessageRow.this.msg));
+                if (MessageRow.this.tooltip != null) {
+                    this.squareBtn.addListener(MessageRow.this.tooltip);
+                }
+                this.addChild(this.squareBtn);
+                this.squareBtn.add(new Image(this.msg.icon)).size(ICON_SIZE).center();
             } else {
                 Color fill = this.bubbleFillColor();
                 this.background(tintStatic(fill.r, fill.g, fill.b, fill.a));

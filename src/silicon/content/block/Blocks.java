@@ -16,6 +16,7 @@ import silicon.world.blocks.power.PowerProtector;
 import silicon.world.blocks.power.RollGenerator;
 import silicon.world.blocks.production.MineConverter;
 import silicon.world.blocks.sandbox.PowerSource;
+import silicon.world.blocks.sandbox.MessageTest;
 import silicon.world.blocks.signal.DimensionAnchor;
 import silicon.world.blocks.signal.SignalRelay;
 import silicon.world.blocks.signal.SignalSource;
@@ -25,7 +26,7 @@ import static mindustry.type.ItemStack.with;
 public class Blocks {
     public static Block powerGeneratorPump, dualPurposeJunction, dualPurposeStorager,
             rollGenerator, powerProtector, powerSource, mineConverter, theSwitch, itemTransferHub,
-            dimensionAnchor, signalSource, universalJunction, signalRelay;
+            dimensionAnchor, signalSource, universalJunction, signalRelay, messageTest;
 
     public static void load() {
         powerGeneratorPump = new GeneratorPump("power-generator-pump") {{
@@ -130,6 +131,13 @@ public class Blocks {
             alwaysUnlocked = true;
             size = 1;
             health = 100;
+        }};
+        // “消息测试”调试方块：置于建造菜单最后，不占旧存档 ID；功能上用于手动投递消息面板测试消息
+        messageTest = new MessageTest("message-test") {{
+            requirements(Category.effect, BuildVisibility.sandboxOnly, with());
+            alwaysUnlocked = true;
+            size = 1;
+            health = 60;
         }};
     }
 }

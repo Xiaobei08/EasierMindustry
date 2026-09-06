@@ -58,6 +58,10 @@ public class ItemTransferHub extends Block {
     static final int SMOOTH_TICKS = 30;
     /** 探测请求下限（电力）：至少相当于一件物品经手的电费，用于实证电网供电能力。 */
     static final float PROBE_DRAW = 10f;
+    /** 拓扑校正：建筑出现在本端后的延迟校正倒计时（tick；给原一次性广播落地时间再比对）。 */
+    static final int HUB_TOPO_PREPARE_TICKS = 40;
+    /** 拓扑校正常驻周期（tick）：一次性 config 广播被端端构造竞态丢弃时，靠此自愈。 */
+    static final int HUB_TOPO_REPAIR_TICKS = 900;
     /** 调试日志开关（Silicon 设置页控制）。 */
     public static boolean debugFlows = false;
 
@@ -168,6 +172,75 @@ public class ItemTransferHub extends Block {
             Draw.z(prevZ);
             Draw.reset();
         });
+    }
+
+    /**
+     * 多人拓扑校正：把所有 hub 连接的一次性广播纳入可自愈协议。
+     * 原一次性 config 广播（建完事件 / placeEnded 自动连 / 拖线 / 粘贴）若在
+     * 成员端构造出目标建筑前到达，会被 InputHandler 客户端分支【静默丢弃且永无重试】，
+     * 造成“主机有连线、成员无连线”的持久不同步（仅重连才会恢复）。
+     * 本机制：成员端延迟+周期携带本地拓扑快照请求，服务器比对不一致才应答——
+     * 应答走标准 config 通道广播全量权威 Point2[]（既有处理器会清残留+重建反向），
+     * 一次性收敛全部客户端。静默稳态下成员仅每周期贡献一个 8 字节级小包。
+     */
+    public static final String topoRequestPacket = "silicon-hub-topo-request";
+    private static boolean topoNetworkingInitialized;
+
+    /** 注册服务器端拓扑请求应答，须在 mod init 中调用（与 MineConverter 同款）。 */
+    public static void initNetworking() {
+        if (topoNetworkingInitialized) return;
+        topoNetworkingInitialized = true;
+        if (mindustry.Vars.netServer != null) {
+            mindustry.Vars.netServer.addBinaryPacketHandler(topoRequestPacket, ItemTransferHub::onTopoRequest);
+        }
+    }
+
+    private static void onTopoRequest(mindustry.gen.Player player, byte[] data) {
+        if (data == null || data.length < 8) return;
+        try (java.io.DataInputStream in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(data))) {
+            int tx = in.readInt();
+            int ty = in.readInt();
+            Building b = world.build(tx, ty);
+            if (!(b instanceof ItemTransferHubBuild hub) || !hub.isValid()) return;
+            // 仅服务于同队玩家（防跨队窃取他队拓扑）
+            if (player == null || player.team() != hub.team) return;
+            int n1 = in.readInt();
+            if (n1 < 0 || n1 > 4096) return;
+            IntSeq cLinks = new IntSeq(n1);
+            for (int i = 0; i < n1; i++) cLinks.add(in.readInt());
+            int n2 = in.readInt();
+            if (n2 < 0 || n2 > 4096) return;
+            IntSeq cHubLinks = new IntSeq(n2);
+            for (int i = 0; i < n2; i++) cHubLinks.add(in.readInt());
+            // 拓扑一致：静默（不发空广播）
+            if (seqEquals(cLinks, hub.links) && seqEquals(cHubLinks, hub.hubLinks)) return;
+            sendTopo(hub);
+        } catch (java.io.IOException ignored) {
+        }
+    }
+
+    private static boolean seqEquals(IntSeq a, IntSeq b) {
+        if (a.size != b.size) return false;
+        for (int i = 0; i < a.size; i++) {
+            if (!b.contains(a.get(i))) return false;
+        }
+        return true;
+    }
+
+    /** 广播一枢全量权威拓扑（Point2[]，走标准 config 通道全端复制）。 */
+    private static void sendTopo(ItemTransferHubBuild hub) {
+        int n = hub.links.size + hub.hubLinks.size;
+        arc.math.geom.Point2[] snaps = new arc.math.geom.Point2[n];
+        int k = 0;
+        for (int i = 0; i < hub.links.size; i++) {
+            int pos = hub.links.get(i);
+            snaps[k++] = new arc.math.geom.Point2(arc.math.geom.Point2.x(pos) - hub.tile.x, arc.math.geom.Point2.y(pos) - hub.tile.y);
+        }
+        for (int i = 0; i < hub.hubLinks.size; i++) {
+            int pos = hub.hubLinks.get(i);
+            snaps[k++] = new arc.math.geom.Point2(arc.math.geom.Point2.x(pos) - hub.tile.x, arc.math.geom.Point2.y(pos) - hub.tile.y);
+        }
+        mindustry.gen.Call.tileConfig(null, hub, snaps);
     }
 
     /** 当前是否正在放置「会被中枢自动接入」的非中枢方块（放置侧预览触发条件）。 */
@@ -330,6 +403,23 @@ public class ItemTransferHub extends Block {
         // 粘贴蓝图时中枢可能先于矿机/仓库建成，电力节点的边存在两端所以无此问题，
         // 中枢的边只存于本端，必须自行补连才能保证「后建的建筑也能接上」
         config(arc.math.geom.Point2[].class, (ItemTransferHubBuild entity, arc.math.geom.Point2[] dragLinks) -> {
+            // 先清理被替换的旧连接在其它中枢上的反向引用（双向对称维护）：
+            // 旧 hubLinks 对应反向 hubLinks；links 中历史遗留的中枢条目同样反查清除。
+            // 否则重配（复制粘贴 / 双击清空）后其它中枢仍保留本枢的反向粉色边，跨端拓扑漂移。
+            for (int i = entity.hubLinks.size - 1; i >= 0; i--) {
+                Building ob = world.build(entity.hubLinks.get(i));
+                if (ob instanceof ItemTransferHubBuild oh) {
+                    oh.hubLinks.removeValue(entity.pos());
+                    rebuildData(oh);
+                }
+            }
+            for (int i = entity.links.size - 1; i >= 0; i--) {
+                Building ob = world.build(entity.links.get(i));
+                if (ob instanceof ItemTransferHubBuild oh) {
+                    oh.hubLinks.removeValue(entity.pos());
+                    rebuildData(oh);
+                }
+            }
             entity.links.clear();
             entity.hubLinks.clear();
             entity.pendingLinks.clear();
@@ -744,6 +834,12 @@ public class ItemTransferHub extends Block {
         private float powerSecondSum = 0f;
         private int rateTickCounter = 0;
 
+        // ── 多人拓扑校正（会话内状态，不入存档）──────────────────
+        /** 出现于本端后的延迟校正倒计时（0=空闲；递减到 0 触发一次快照比对）。 */
+        int topoCheckIn = 0;
+        /** 常驻校正周期计数（每 HUB_TOPO_REPAIR_TICKS 与服务器比对一次）。 */
+        int topoRepairPeriod = 0;
+
         private final Seq<ItemTransferHubBuild> bfsQueue = new Seq<>();
         private final IntSeq bfsDists = new IntSeq();
         private final IntSet bfsVisited = new IntSet();
@@ -805,6 +901,8 @@ public class ItemTransferHub extends Block {
         public void created() {
             super.created();
             updateTopology();
+            // 世界流/重连加载：原一次性 config 广播存在与本端构造的竞态，排一次校正比对
+            if (mindustry.Vars.net.client()) topoCheckIn = HUB_TOPO_PREPARE_TICKS;
         }
 
         @Override
@@ -812,6 +910,25 @@ public class ItemTransferHub extends Block {
             // 自动补连移至 placeEnded（configured 之后执行）：先应用复制的原始
             // 连接模式，再用剩余容量像电力节点一样补连周围建筑
             super.placed();
+            // 放置路径同款竞态：建完广播可能先于本端落盘，延迟比对一次
+            if (mindustry.Vars.net.client()) topoCheckIn = HUB_TOPO_PREPARE_TICKS;
+        }
+
+        /** 发送本端拓扑快照请求：服务器比对不一致才广播全量权威拓扑，一致则静默。 */
+        private void requestTopologyRepair() {
+            if (mindustry.Vars.world.isGenerating()) return;
+            if (!mindustry.Vars.net.client() || mindustry.Vars.net.server()) return;
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream(64);
+            try (java.io.DataOutputStream out = new java.io.DataOutputStream(bytes)) {
+                out.writeInt(tile.x);
+                out.writeInt(tile.y);
+                out.writeInt(links.size);
+                for (int i = 0; i < links.size; i++) out.writeInt(links.get(i));
+                out.writeInt(hubLinks.size);
+                for (int i = 0; i < hubLinks.size; i++) out.writeInt(hubLinks.get(i));
+            } catch (java.io.IOException ignored) {
+            }
+            mindustry.gen.Call.serverBinaryPacketReliable(topoRequestPacket, bytes.toByteArray());
         }
 
         /** 仅连接范围内的全部中枢（粉色骨架，无上限、双向对称、不占普通连接配额）。距离就近依次接入。 */
@@ -858,29 +975,6 @@ public class ItemTransferHub extends Block {
         /** 任一连接表（普通/中枢间）中存在该目标。 */
         private boolean hasAnyLink(int pos) {
             return links.contains(pos) || hubLinks.contains(pos);
-        }
-
-        /** 双击清空：断开全部普通与中枢间连接（含反向）。 */
-        private void clearAllLinks() {
-            for (int i = hubLinks.size - 1; i >= 0; i--) {
-                int pos = hubLinks.get(i);
-                Building ob = world.build(pos);
-                if (ob instanceof ItemTransferHubBuild oh) {
-                    oh.hubLinks.removeValue(this.pos());
-                    rebuildData(oh);
-                }
-            }
-            hubLinks.clear();
-            for (int i = links.size - 1; i >= 0; i--) {
-                int pos = links.get(i);
-                Building ob = world.build(pos);
-                if (ob instanceof ItemTransferHubBuild oh) {
-                    oh.links.removeValue(this.pos());
-                    rebuildData(oh);
-                }
-            }
-            links.clear();
-            rebuildData(this);
         }
 
         // ── 建筑拓扑（Building Topology）──────────────────────
@@ -959,6 +1053,16 @@ public class ItemTransferHub extends Block {
         public void updateTile() {
 
             super.updateTile();
+
+            // 多人拓扑校正：一次性 config 广播被成员端构造竞态静默丢弃时，
+            // 靠延迟校正 + 常驻周期比对服务器权威拓扑自愈（防“主机有线成员无线”）。
+            if (mindustry.Vars.net.client() && !mindustry.Vars.net.server()) {
+                if (topoCheckIn > 0 && --topoCheckIn == 0) requestTopologyRepair();
+                if (++topoRepairPeriod >= HUB_TOPO_REPAIR_TICKS) {
+                    topoRepairPeriod = 0;
+                    requestTopologyRepair();
+                }
+            }
 
             // 周期性拓扑刷新：链路目标被拆除时不会触发本枢邻近事件，
             // 定时剔除失效路径并回收连接数（timers=4 中使用 id=2）。
@@ -1944,11 +2048,12 @@ public class ItemTransferHub extends Block {
             if (this == other) {
                 ItemTransferHub hubBlock = (ItemTransferHub) block;
                 if (links.size > 0 || hubLinks.size > 0) {
-                    // 双击已连中枢：清空全部链接（普通 + 中枢间，含反向）
-                    clearAllLinks();
-                    rebuildData(this);
+                    // 双击清空全部链接：必须走 configure()（Point2[] 处理器在服务器统一清理
+                    // 本端与各对端反向引用后再广播）——直接改写本地列表只会让本客户端清净，
+                    // 服务器与其客户端毫不知情，跨端拓扑立即漂移。
+                    configure(new arc.math.geom.Point2[0]);
                 } else {
-                    // 双击自动连接：与放置同一套【距离就近】逻辑
+                    // 双击自动连接：与放置同一套【距离就近】逻辑（逐条 configure 已走复制的配置通道）
                     autoConnectNearby(hubBlock);
                 }
                 deselect();

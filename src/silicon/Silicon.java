@@ -5,6 +5,8 @@ import arc.Events;
 import arc.func.Cons;
 import arc.graphics.Color;
 import arc.graphics.g2d.TextureRegion;
+import arc.input.KeyBind;
+import arc.input.KeyCode;
 import arc.scene.style.TextureRegionDrawable;
 import arc.scene.ui.TextField;
 import arc.util.Time;
@@ -22,21 +24,29 @@ import mindustry.ui.dialogs.BaseDialog;
 import mindustry.ui.dialogs.SettingsMenuDialog;
 import silicon.content.block.Blocks;
 import silicon.content.item.Items;
+import silicon.util.MessageSync;
+import silicon.util.MessageSystem;
 import silicon.util.SiliconLog;
 import silicon.util.SignalOverlay;
 import silicon.util.UpdateChecker;
 import silicon.world.blocks.distribution.ItemTransferHubNetwork;
+import silicon.world.blocks.distribution.ItemTransferHub;
 import silicon.world.blocks.power.PowerProtector;
 import silicon.world.blocks.production.MineConverter;
 import silicon.world.blocks.signal.SignalRelay;
 import silicon.world.blocks.signal.SignalSource;
 import silicon.ui.BlockSearch;
+import silicon.ui.MessagePanel;
 
 import static mindustry.Vars.*;
 
 
 public class Silicon extends Mod {
     public static Mods.LoadedMod MOD;
+    /** 常驻屏幕左边缘的消息面板实例（游戏中显示） */
+    public static MessagePanel messagePanel;
+    /** 消息面板开关按键绑定（默认 I，可在按键设置中重绑定） */
+    public static KeyBind keyToggleMessagePanel;
 
     /**
      * 自定义设置项：在设置表中插入任意内容（分隔线、按钮等）。
@@ -74,6 +84,9 @@ public class Silicon extends Mod {
 
     @Override
     public void init() {
+        // 注册消息面板开关按键（默认 I，可在按键设置中重绑定）
+        keyToggleMessagePanel = KeyBind.add("silicon_toggle_panel", KeyCode.i, "silicon");
+
         // Reset hub network ID counter on world load to avoid ID collisions with saved hubs.
         // 信号源/中继器按队缓存也在世界加载时失效重建（读档后建筑重新加入 Groups.build）。
         // 电力保护器全局状态也需重置。
@@ -86,7 +99,10 @@ public class Silicon extends Mod {
 
         BlockSearch.init();
         MineConverter.initNetworking();
+        ItemTransferHub.initNetworking();
         SignalOverlay.init();
+        // 消息系统多人联网同步（nop 当不在服务器上时，仅注册事件处理器）
+        MessageSync.init();
 
         // 主界面自动检查 GitHub 更新（可在设置中关闭；有更新才显示横幅，初始隐藏）
         Events.on(EventType.ClientLoadEvent.class, e -> {
@@ -102,7 +118,20 @@ public class Silicon extends Mod {
                 // —— 方块搜索设置 ——
                 st.checkPref("blocksearch.showHistory", true);
                 st.checkPref("blocksearch.clearOnSelect", true);
-                // 灰色细线：搜索设置与暂停设置分隔（注册为设置项，rebuild 时保留）
+                // 灰色细线：方块搜索与消息面板设置分隔（注册为设置项，rebuild 时保留）
+                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
+                // —— 消息面板设置 ——
+                // 宽度（屏幕宽百分比，20%~50%）与最高位置（屏幕高百分比，20%~80%）
+                st.sliderPref(MessagePanel.SET_WIDTH, (int) MessagePanel.DEFAULT_WIDTH_PERCENT,
+                        (int) MessagePanel.MIN_WIDTH_PERCENT, (int) MessagePanel.MAX_WIDTH_PERCENT, 5,
+                        i -> i + "%", i -> MessagePanel.applySettings());
+                st.sliderPref(MessagePanel.SET_TOP, (int) MessagePanel.DEFAULT_TOP_PERCENT,
+                        (int) MessagePanel.MIN_TOP_PERCENT, (int) MessagePanel.MAX_TOP_PERCENT, 5,
+                        i -> i + "%", i -> MessagePanel.applySettings());
+                st.sliderPref(MessageSystem.SET_MAX_MESSAGES, MessageSystem.DEFAULT_MAX_MESSAGES,
+                        MessageSystem.MIN_MAX_MESSAGES, MessageSystem.MAX_MAX_MESSAGES, 5,
+                        i -> i + "", i -> MessagePanel.applySettings());
+                // 灰色细线：消息面板设置与暂停设置分隔（注册为设置项，rebuild 时保留）
                 st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
                 // —— 暂停设置 ——
                 st.sliderPref("pauseMode", 0, 0, 2, 1,
@@ -137,6 +166,13 @@ public class Silicon extends Mod {
 
                 SiliconLog.info("Loading settings.");
             });
+        });
+
+        Events.on(EventType.ClientLoadEvent.class, e -> {
+            // 初始化常驻左边缘的消息面板，加入 HUD 组
+            messagePanel = new MessagePanel();
+            MessagePanel.setInstance(messagePanel);
+            ui.hudGroup.addChild(messagePanel);
         });
 
         Events.on(EventType.ClientLoadEvent.class, e -> {
@@ -216,6 +252,16 @@ public class Silicon extends Mod {
             String msg = e.message;
             if (msg == null || !msg.startsWith("!pause")) return;
             handlePauseCommand(e.player, msg);
+        });
+
+        // —— 消息面板开关按键 ——
+        // 默认 I 键切换面板展开/收起（可在按键设置中重绑定，仅游戏内生效）
+        Events.run(EventType.Trigger.update, () -> {
+            if (!state.isGame()) return;
+            if (messagePanel != null && keyToggleMessagePanel != null
+                && Core.input.keyTap(keyToggleMessagePanel)) {
+                messagePanel.toggle();
+            }
         });
     }
 

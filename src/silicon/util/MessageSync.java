@@ -118,6 +118,11 @@ public class MessageSync implements MessageSystem.Listener {
                         // 服务器强制归属：uid 由服务器重新分配；队伍一律落回请求者队伍（防伪造他人队伍消息）
                         m.uid = -1;
                         if (m.team == null || m.team != player.team()) m.team = player.team();
+                        // 来源归属校验：声称存在来源方块（senderKey>=0）时，要求该坐标方块存在且属于请求者本人；
+                        // 防止自报任意坐标伪造来源（source 清扫会据此定位方块，非法坐标亦可被用来冒认他人方块/消息）。
+                        // 校验失败直接拒绝本次投递（与服务器未确认等价，客户端保持 pending 等待），而非抹平 senderKey——
+                        // 抹平会让客户端按坐标认领失败而永久停在「等待服务器确认」，并留下无来源的孤立消息。
+                        if (m.senderKey >= 0 && !ownsSourceBlock(player, m.senderKey)) continue;
                         MessageSystem.instance.add(m);
                     }
                     case REQ_REMOVE -> removeRequested(player, in.readLong());
@@ -132,18 +137,22 @@ public class MessageSync implements MessageSystem.Listener {
         }
     }
 
-    /** 客户端请求撤销一条持续型消息：仅持续型、且对请求者可见（全局/同队/通用）才执行。 */
+    /** 客户端请求撤销一条持续型消息：仅<b>客户端来源</b>（{@link Message#senderKey} >= 0）、且对请求者可见
+     *  （全局/同队/通用）才执行。服务器/系统来源的持续型消息（如 PowerProtector 警示，senderKey 恒为 -1）
+     *  由权威进程自管生命周期，客户端无权撤销。 */
     private static void removeRequested(Player player, long uid) {
         Message m = MessageSystem.instance.byUid(uid);
-        if (m == null || m.type != MessageType.PERSISTENT) return;
+        if (m == null || m.type != MessageType.PERSISTENT || m.senderKey < 0) return;
         if (!m.visibleTo(player.team())) return;
         MessageSystem.instance.remove(m);
     }
 
-    /** 客户端请求更新一条持续型消息：按请求的完整期望状态替换服务器权威记录，并立即广播刷新快照。 */
+    /** 客户端请求更新一条持续型消息：仅<b>客户端来源</b>（{@link Message#senderKey} >= 0）、且对请求者可见才执行，
+     *  按请求的完整期望状态替换服务器权威记录，并立即广播刷新快照。服务器/系统来源的消息不可被客户端篡改
+     *  （防止冒充系统样式/音效、把队伍消息提升为全局泄给敌方）。 */
     private static void updateRequested(Player player, Message requested) {
         Message m = MessageSystem.instance.byUid(requested.uid);
-        if (m == null || m.type != MessageType.PERSISTENT) return;
+        if (m == null || m.type != MessageType.PERSISTENT || m.senderKey < 0) return;
         if (!m.visibleTo(player.team())) return;
         copyRequestedFields(m, requested);
         push(m, OP_UPDATE); // 立即推全量快照，绕过节流
@@ -169,6 +178,15 @@ public class MessageSync implements MessageSystem.Listener {
         target.content = src.content;
         target.silent = src.silent;
         target.sound = src.sound;
+    }
+
+    /** 校验请求者确实持有 {@code senderKey} 指向的来源方块（坐标解码与 {@link #sweepClientMessages()} 一致）。
+     *  校验失败即拒绝受理，杜绝自报任意来源坐标伪造归属/冒认他人方块。 */
+    private static boolean ownsSourceBlock(Player player, long senderKey) {
+        int x = (int) (senderKey >> 32);
+        int y = (int) (senderKey & 0xffffffffL);
+        Building b = Vars.world.build(x, y);
+        return b != null && b.team == player.team();
     }
 
     // ---------- 服务器：变更广播 ----------
@@ -417,7 +435,8 @@ public class MessageSync implements MessageSystem.Listener {
         Call.serverBinaryPacketReliable(PACKET, bytes.toByteArray());
     }
 
-    /** 客户端请求撤销一条持续型消息（服务器校验可见性后移除并广播）。 */
+    /** 客户端请求撤销一条<b>自己来源</b>（{@link Message#senderKey}&gt;=0）的持续型消息
+     *  （服务器校验后移除并广播；系统/服务器来源消息不可由客户端撤销）。 */
     public static void requestRemove(long uid) {
         if (!Vars.net.client()) return;
         ByteArrayOutputStream bytes = new ByteArrayOutputStream(16);
@@ -432,7 +451,7 @@ public class MessageSync implements MessageSystem.Listener {
         Call.serverBinaryPacketReliable(PACKET, bytes.toByteArray());
     }
 
-    /** 客户端请求以指定完整状态替换某持续型消息（服务器复制期望字段到权威记录并立即广播刷新快照）。 */
+    /** 客户端请求以指定完整状态替换某<b>自己来源</b>的持续型消息（服务器校验后复制期望字段到权威记录并立即广播刷新快照）。 */
     public static void requestUpdate(long uid, Message state) {
         if (!Vars.net.client()) return;
         ByteArrayOutputStream bytes = new ByteArrayOutputStream(128);

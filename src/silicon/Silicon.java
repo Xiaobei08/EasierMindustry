@@ -276,8 +276,6 @@ public class Silicon extends Mod {
                 // —— 中枢物流调试与连线 ——
                 st.checkPref("hubDebugLog", false, v -> silicon.world.blocks.distribution.ItemTransferHub.debugFlows = v);
                 st.sliderPref("hubLinkOpacity", 100, 0, 100, 5, i -> i + "%");
-                // —— 万向交叉器界面 ——
-                st.checkPref("universal-junction.newUI", false);
                 // 灰色细线：与「恢复默认设置」分隔（注册为设置项，rebuild 时保留）
                 st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
 

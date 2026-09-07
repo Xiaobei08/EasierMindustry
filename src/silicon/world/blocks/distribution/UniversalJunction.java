@@ -4,15 +4,13 @@ import arc.Core;
 import arc.graphics.Color;
 import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.TextureRegion;
-import arc.math.geom.Geometry;
 import arc.math.Mathf;
-import static mindustry.Vars.tilesize;
+import arc.scene.Element;
 import arc.scene.event.Touchable;
 import arc.scene.ui.Button;
 import arc.scene.ui.Label;
 import arc.scene.ui.Slider;
 import arc.scene.ui.TextButton;
-import arc.scene.ui.ScrollPane;
 import arc.scene.ui.layout.Table;
 import arc.scene.ui.layout.WidgetGroup;
 import arc.scene.style.TextureRegionDrawable;
@@ -20,7 +18,6 @@ import arc.util.Align;
 import arc.util.Time;
 import arc.util.io.Reads;
 import arc.util.io.Writes;
-import mindustry.Vars;
 import mindustry.gen.BufferItem;
 import mindustry.gen.Building;
 import mindustry.gen.Icon;
@@ -29,13 +26,11 @@ import mindustry.gen.Teamc;
 import mindustry.graphics.Pal;
 import mindustry.type.Item;
 import mindustry.ui.Styles;
-import mindustry.ui.dialogs.BaseDialog;
 import mindustry.world.Block;
 import mindustry.world.DirectionalItemBuffer;
 import mindustry.world.meta.BlockGroup;
 import mindustry.world.meta.Stat;
 import mindustry.world.meta.StatUnit;
-import silicon.ui.UniversalJunctionDialog;
 
 import static mindustry.Vars.content;
 import static mindustry.Vars.ui;
@@ -64,19 +59,9 @@ public class UniversalJunction extends Block {
     /** 方向图标（标准方位：0=上 1=右 2=下 3=左） */
     public static final TextureRegionDrawable[] dirIcons = {Icon.up, Icon.right, Icon.down, Icon.left};
 
-    /** 方向名称缓存（启动时从 bundle 预加载，避免每次调用都查 bundle） */
-    private static String[] dirNames;
-
-    /** 预加载方向名称到缓存（ClientLoadEvent 后调用） */
-    public static void initDirNames() {
-        dirNames = new String[4];
-        for (int i = 0; i < 4; i++) dirNames[i] = Core.bundle.get("universal-junction.dir" + i);
-    }
-
-    /** 方向名称（从缓存读取；缓存未初始化时回退到 bundle 直查） */
+    /** 方向名称（从 bundle 读取，支持多语言：universaljunction.dir0~3） */
     public static String dirName(int dir) {
-        if (dirNames == null) initDirNames();
-        return dirNames[dir];
+        return Core.bundle.get("universal-junction.dir" + dir);
     }
 
     /** 角度编码（0=东 1=北 2=西 3=南，relativeTo 返回值）→ 标准方位（物品来源方向） */
@@ -106,7 +91,7 @@ public class UniversalJunction extends Block {
         copyConfig = true;
         drawArrow = false;
 
-        // 优先级通过 String 配置值同步（20 个逗号分隔的整数，16 矩阵 + 4 全局默认行）
+        // 优先级通过 String 配置值同步（16 个逗号分隔的整数，[输入][输出] 顺序）
         config(String.class, (UniversalJunctionBuild b, String str) -> b.applyConfig(str));
     }
 
@@ -143,12 +128,7 @@ public class UniversalJunction extends Block {
         /** 各输入方向当前生效的最高优先级（降级时降低，探测到更高组恢复时回升） */
         public final int[] activePriority = new int[4];
         /** 连续满载多少 tick 后才降级到次高优先级 */
-        public static final int BLOCK_THRESHOLD = 10;
-
-
-        // 插入点 UI 状态
-        Table currentInsertBox = null;
-        int currentInsertPosition = -1;
+        public static final int blockThreshold = 10;
         /** 输入方向轮询指针（各输入方向轮流服务，避免高压方向饿死其他方向） */
         public int inputRobin;
         /** 配置节流间隔（秒）：拖动滑块期间合并多次改动为一次网络发送 */
@@ -164,8 +144,6 @@ public class UniversalJunction extends Block {
         {
             setAll(2);
         }
-
-
 
         @Override
         public boolean acceptItem(Building source, Item item) {
@@ -208,11 +186,8 @@ public class UniversalJunction extends Block {
             int input = pickInput();
             if (input == -1) return;
 
-            // 防止缓冲区索引溢出：截断并丢弃多余数据，保留前 capacity 项
-            if (buffer.indexes[input] > capacity) {
-                System.arraycopy(buffer.buffers[input], 0, buffer.buffers[input], 0, capacity);
-                buffer.indexes[input] = capacity;
-            }
+            // 防止缓冲区索引溢出
+            if (buffer.indexes[input] > capacity) buffer.indexes[input] = capacity;
 
             long l = buffer.buffers[input][0];
             Item item = content.item(BufferItem.item(l));
@@ -291,7 +266,7 @@ public class UniversalJunction extends Block {
 
             // 组内方向存在但全部暂时满载：等待重试，连续阻塞超过阈值才持久降级
             blockCount[input]++;
-            if (blockCount[input] < BLOCK_THRESHOLD) return -1;
+            if (blockCount[input] < blockThreshold) return -1;
             blockCount[input] = 0;
             activePriority[input] = nextLower(input, p);
             return -1;
@@ -329,14 +304,14 @@ public class UniversalJunction extends Block {
 
         // ---------- 配置 ----------
 
-        public void setAll(int v) {
+        void setAll(int v) {
             for (int i = 0; i < 4; i++) {
                 for (int j = 0; j < 4; j++) weights[i][j] = v;
             }
         }
 
         /** 仅设置指定输入方向的 4 个输出优先级（快捷按钮作用域：当前选中的输入方向） */
-        public void setAllFor(int in, int v) {
+        void setAllFor(int in, int v) {
             for (int j = 0; j < 4; j++) weights[in][j] = v;
         }
 
@@ -351,59 +326,6 @@ public class UniversalJunction extends Block {
         /** 恢复指定输入方向为全局默认（取消覆盖） */
         void resetToDefault(int in) {
             System.arraycopy(defaultRow, 0, weights[in], 0, 4);
-        }
-
-        /** 该输入方向是否所有输出优先级均为 0（完全禁用） */
-        boolean isDisabled(int in) {
-            for (int d = 0; d < 4; d++) {
-                if (weights[in][d] > 0) return false;
-            }
-            return true;
-        }
-
-        // ---------- 组号系统（零冗余） ----------
-
-        /**
-         * 规范化组号：将 groups[4] 中的组号重新编号为连续的 0,1,2,...
-         * groups[d]: 0=最高, 1, 2, 3=最低, -1=禁用
-         */
-        void canonicalizeGroups(int in, int[] groups) {
-            int[] map = new int[5]; // 原组号 → 规范组号
-            java.util.Arrays.fill(map, -1);
-            int next = 0;
-            for (int g = 0; g <= 3; g++) {
-                boolean used = false;
-                for (int d = 0; d < 4; d++) {
-                    if (groups[d] == g) { used = true; break; }
-                }
-                if (used) map[g] = next++;
-            }
-            for (int d = 0; d < 4; d++) {
-                groups[d] = groups[d] < 0 ? -1 : map[groups[d]];
-            }
-        }
-
-        /** 组号 → weights：0→4, 1→3, 2→2, 3→1, -1→0 */
-        void groupsToWeights(int in, int[] groups) {
-            for (int d = 0; d < 4; d++) {
-                weights[in][d] = groups[d] < 0 ? 0 : 4 - groups[d];
-            }
-        }
-
-        /** weights → 组号（用于 UI 初始化） */
-        int[] weightsToTiers(int in) {
-            int[] tiers = new int[4];
-            java.util.TreeSet<Integer> vals = new java.util.TreeSet<>(java.util.Comparator.reverseOrder());
-            for (int d = 0; d < 4; d++) {
-                if (weights[in][d] > 0) vals.add(weights[in][d]);
-            }
-            java.util.Map<Integer, Integer> valToTier = new java.util.HashMap<>();
-            int tier = 0;
-            for (int v : vals) valToTier.put(v, tier++);
-            for (int d = 0; d < 4; d++) {
-                tiers[d] = weights[in][d] > 0 ? valToTier.get(weights[in][d]) : -1;
-            }
-            return tiers;
         }
 
         // ---------- 同值折叠判定（数值相同组折叠为文字，滑块常驻占位、hover/tap 淡入淡出） ----------
@@ -443,16 +365,9 @@ public class UniversalJunction extends Block {
          * 渲染一行输出配置：唯一值/组代表常显滑块；
          * 重复值折叠为文字（覆盖层），滑块仍在原位（透明占位）——
          * hover 或点击时文字与滑块交叉淡入淡出，布局恒定不抖动。
-         * <p>
-         * 优化：通过 lastFoldText 跟踪折叠文字变化，per-frame lambda 自动更新
-         * 折叠文字和 force/show 状态，onChanged 不再需要重建兄弟行。
-         *
-         * @param foldLabelOut  用于存储折叠文字 Label 引用的数组（按 out 索引），可为 null
-         * @param valLabelOut   用于存储数值 Label 引用的数组（按 out 索引），可为 null
+         * 注意：行的 hover/exited 监听由调用方在创建行时注册一次，本方法只刷新内容。
          */
-        void renderRow(Table row, int[] data, int out, boolean[] tapOpen, boolean[] hoverOpen,
-                       java.util.function.IntConsumer onChanged,
-                       Label[] foldLabelOut, Label[] valLabelOut) {
+        void renderRow(Table row, int[] data, int out, boolean[] tapOpen, boolean[] hoverOpen, java.util.function.IntConsumer onChanged) {
             row.clearChildren();
             boolean force = isUnique(data, out) || isRepresentative(data, out); // 始终显示滑块
             boolean show = force || tapOpen[out] || hoverOpen[out];
@@ -461,7 +376,6 @@ public class UniversalJunction extends Block {
             Label val = new Label(String.valueOf(data[out]));
             val.setAlignment(Align.center);
             val.setColor(1f, 1f, 1f, show ? 1f : 0f);
-            if (valLabelOut != null) valLabelOut[out] = val;
 
             // 三列布局：标签 / 重叠组（文字↔滑块交叉淡入淡出）/ 数值
             Label dirL = new Label(dirName(out) + " →");
@@ -478,7 +392,6 @@ public class UniversalJunction extends Block {
             textL.setAlignment(Align.left);
             textL.setColor(1f, 1f, 1f, show ? 0f : 1f);
             textL.clicked(() -> tapOpen[out] = !tapOpen[out]); // tap 固定展开/收起
-            if (foldLabelOut != null) foldLabelOut[out] = textL;
 
             Table sg = new Table();
             sg.marginLeft(12f);
@@ -497,28 +410,20 @@ public class UniversalJunction extends Block {
             group.addChild(textL);
             group.addChild(sg);
             final int[] lastVal = {data[out]};
-            final String[] lastFoldText = {textL.getText().toString()};
             group.update(() -> {
                 // 每帧同步子元素 bounds 到组实际宽度（growX 自适应），并交叉淡入淡出
                 float w = Math.max(group.getWidth(), 0f);
                 textL.setBounds(12f, 0f, Math.max(w - 24f, 0f), 40f);
                 sg.setBounds(0f, 0f, w, 40f);
-                // 数据变化或组结构变化时更新折叠文字
-                String newFold = "▾ " + foldText(data, out);
-                if (data[out] != lastVal[0] || !newFold.equals(lastFoldText[0])) {
+                // 数据变化时更新折叠文字（调整滑块后实时刷新）
+                if (data[out] != lastVal[0]) {
                     lastVal[0] = data[out];
-                    lastFoldText[0] = newFold;
-                    textL.setText(newFold);
+                    textL.setText("▾ " + foldText(data, out));
                 }
                 // 实时重算 force（值变化可能使该行成为唯一值/组代表）
                 boolean f = isUnique(data, out) || isRepresentative(data, out);
                 boolean s = f || tapOpen[out] || hoverOpen[out];
-                // 禁用方向（值=0）折叠文字用红色强调
-                boolean disabled = data[out] == 0;
-                float cr = disabled ? 0.85f : 1f;
-                float cg = disabled ? 0.25f : 1f;
-                float cb = disabled ? 0.25f : 1f;
-                textL.setColor(cr, cg, cb, Mathf.lerp(textL.color.a, s ? 0f : 1f, 0.25f));
+                textL.setColor(1f, 1f, 1f, Mathf.lerp(textL.color.a, s ? 0f : 1f, 0.25f));
                 sg.setColor(1f, 1f, 1f, Mathf.lerp(sg.color.a, s ? 1f : 0f, 0.25f));
                 val.setColor(1f, 1f, 1f, Mathf.lerp(val.color.a, s ? 1f : 0f, 0.25f));
                 textL.touchable = s ? Touchable.disabled : Touchable.enabled;
@@ -526,12 +431,6 @@ public class UniversalJunction extends Block {
             });
             row.add(group).growX().height(40f);
             row.add(val).width(32f).height(40f);
-        }
-
-        /** 重载：不存储引用的版本（模板管理区等不需要增量更新的场景） */
-        void renderRow(Table row, int[] data, int out, boolean[] tapOpen, boolean[] hoverOpen,
-                       java.util.function.IntConsumer onChanged) {
-            renderRow(row, data, out, tapOpen, hoverOpen, onChanged, null, null);
         }
 
         /**
@@ -557,10 +456,10 @@ public class UniversalJunction extends Block {
 
         // ---------- 模板持久化（玩家全局偏好，存于游戏设置） ----------
 
-        static final String TEMPLATES_KEY = "silicon-uj-templates";
+        static final String templatesKey = "silicon-uj-templates";
         /** 内置模板：均分 / 全右 / 主右备左 / 上下直通（20 值 = 16 矩阵 + 4 全局行，方向顺序 上右下左） */
-        static final String[] BUILTIN_TEMPLATE_KEYS = {"universal-junction.tpl.even", "universal-junction.tpl.east", "universal-junction.tpl.eastwest", "universal-junction.tpl.ns"};
-        static final int[][] BUILTIN_TEMPLATE_ROWS = {
+        static final String[] builtinTemplateKeys = {"universal-junction.tpl.even", "universal-junction.tpl.east", "universal-junction.tpl.eastwest", "universal-junction.tpl.ns"};
+        static final int[][] builtinTemplateRows = {
             {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
             {0, 4, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0},
             {0, 4, 0, 2, 0, 4, 0, 2, 0, 4, 0, 2, 0, 4, 0, 2, 0, 4, 0, 2},
@@ -570,7 +469,7 @@ public class UniversalJunction extends Block {
         /** 读取自定义模板表（LinkedHashMap：名称 → 20 值完整配置；兼容旧版 4 值全局行格式） */
         static java.util.Map<String, int[]> loadTemplates() {
             java.util.Map<String, int[]> map = new java.util.LinkedHashMap<>();
-            String raw = (String) Core.settings.get(TEMPLATES_KEY, "");
+            String raw = (String) Core.settings.get(templatesKey, "");
             if (raw.isEmpty()) return map;
             for (String part : raw.split(";")) {
                 if (part.isEmpty()) continue;
@@ -629,7 +528,7 @@ public class UniversalJunction extends Block {
                     sb.append(e.getValue()[i]);
                 }
             }
-            Core.settings.put(TEMPLATES_KEY, sb.toString());
+            Core.settings.put(templatesKey, sb.toString());
         }
 
         /** 名称截断：超过 max 字符显示省略号（避免长模板名溢出面板） */
@@ -640,15 +539,15 @@ public class UniversalJunction extends Block {
         /** 模板下拉选项：内置名 + 自定义名 */
         static String[] templateNames() {
             java.util.List<String> list = new java.util.ArrayList<>();
-            for (String key : BUILTIN_TEMPLATE_KEYS) list.add(Core.bundle.get(key));
+            for (String key : builtinTemplateKeys) list.add(Core.bundle.get(key));
             list.addAll(loadTemplates().keySet());
             return list.toArray(new String[0]);
         }
 
         /** 按名称查模板行；内置优先 */
         static int[] findTemplate(String name) {
-            for (int i = 0; i < BUILTIN_TEMPLATE_KEYS.length; i++) {
-                if (Core.bundle.get(BUILTIN_TEMPLATE_KEYS[i]).equals(name)) return BUILTIN_TEMPLATE_ROWS[i];
+            for (int i = 0; i < builtinTemplateKeys.length; i++) {
+                if (Core.bundle.get(builtinTemplateKeys[i]).equals(name)) return builtinTemplateRows[i];
             }
             return loadTemplates().get(name);
         }
@@ -687,10 +586,9 @@ public class UniversalJunction extends Block {
         /** 解析配置字符串，非法时忽略；兼容旧版 16 值（无全局默认行）格式 */
         public void applyConfig(String str) {
             if (str == null) return;
+            String[] parts = str.split(",");
+            if (parts.length != 16 && parts.length != 20) return;
             try {
-                String[] parts = str.split(",");
-                if (parts.length != 16 && parts.length != 20) return;
-
                 for (int i = 0; i < 4; i++) {
                     for (int j = 0; j < 4; j++) {
                         weights[i][j] = Mathf.clamp(Integer.parseInt(parts[i * 4 + j].trim()), 0, 4);
@@ -704,11 +602,8 @@ public class UniversalJunction extends Block {
                     defaultRow = weights[0].clone(); // 旧格式：取第一行作全局默认
                 }
             } catch (NumberFormatException e) {
-                // 本方法经 config(String) 挂在 tileConfig 网络通道上,同队客户端可发任意
-                // 16/20 段非数字串——不能在服务器包线程抛异常,畸形输入一律安全忽略
-                return;
+                return; // 非法配置，忽略
             }
-
             // 配置变更后重置路由瞬态状态，避免沿用旧配置的降级/轮询状态
             for (int i = 0; i < 4; i++) {
                 activePriority[i] = 0;
@@ -724,165 +619,9 @@ public class UniversalJunction extends Block {
 
         // ---------- 配置界面 ----------
 
-        /** 配置面板分发器：根据设置切换新版/经典界面 */
+        /** 配置面板：模板一键应用 + 全局输出优先级 + 按方向覆盖（折叠高级层） */
         @Override
         public void buildConfiguration(Table table) {
-            if (Core.settings.getBool("universal-junction.newUI", false)) {
-                // 新版：齿轮按钮打开全屏配置（参考逻辑处理器的铅笔按钮）
-                table.button(Icon.settings, Styles.cleari, () -> {
-                    UniversalJunctionDialog dialog = new UniversalJunctionDialog();
-                    dialog.show(this);
-                }).size(40f);
-            } else {
-                buildConfigurationLegacy(table);
-            }
-        }
-
-        /** 新版配置面板 v8：最简拖拽测试 */
-//        void showConfigDialog() {
-//            BaseDialog dialog = new BaseDialog(Core.bundle.get("universal-junction.title"));
-//            dialog.addCloseButton();
-//
-//            final String[] items = {"上", "右"};
-//            final int[] order = {0, 1};
-//            final int[] dragIdx = {-1};
-//
-//            // 浮动元素（拖拽时跟随鼠标）
-//            final Table floating = new Table();
-//            floating.background(Tex.paneSolid);
-//            floating.setColor(Color.yellow);
-//            floating.margin(8f);
-//            floating.visible = false;
-//            floating.touchable = Touchable.disabled;
-//
-//            Table content = new Table();
-//            content.background(Tex.pane2);
-//            content.margin(8f);
-//
-//            rebuildBlocks(content, items, order, dragIdx, floating);
-//
-//            // 将浮动元素添加到对话框最上层
-//            dialog.cont.addChild(floating);
-//
-//            dialog.cont.add(content).grow();
-//            dialog.show();
-//        }
-
-        void rebuildBlocks(Table content, String[] items, int[] order, int[] dragIdx, Table floating) {
-            content.clearChildren();
-            for (int i = 0; i < 2; i++) {
-                final int idx = i;
-                final int itemIdx = order[i];
-                Table block = new Table();
-                block.background(Tex.paneSolid);
-                block.setColor(Pal.accent);
-                block.margin(8f);
-                block.touchable = Touchable.enabled;
-
-                Label label = new Label(items[itemIdx], Styles.defaultLabel);
-                label.setFontScale(1.2f);
-                label.setColor(Color.white);
-                block.add(label).width(80f).height(40f);
-
-                block.addListener(new arc.scene.event.InputListener() {
-                    @Override
-                    public boolean touchDown(arc.scene.event.InputEvent event, float x, float y, int pointer, arc.input.KeyCode button) {
-                        dragIdx[0] = itemIdx;
-                        block.setColor(Color.yellow);
-
-                        // 显示浮动元素
-                        floating.clearChildren();
-                        Label fl = new Label(items[itemIdx], Styles.defaultLabel);
-                        fl.setFontScale(1.2f);
-                        fl.setColor(Color.white);
-                        floating.add(fl).width(80f).height(40f);
-                        floating.visible = true;
-                        floating.setPosition(event.stageX - 40f, event.stageY - 20f);
-                        return true;
-                    }
-
-                    @Override
-                    public void touchDragged(arc.scene.event.InputEvent event, float x, float y, int pointer) {
-                        // 浮动元素跟随鼠标
-                        floating.setPosition(event.stageX - 40f, event.stageY - 20f);
-                    }
-
-                    @Override
-                    public void touchUp(arc.scene.event.InputEvent event, float x, float y, int pointer, arc.input.KeyCode button) {
-                        if (dragIdx[0] < 0) return;
-                        int from = dragIdx[0];
-                        dragIdx[0] = -1;
-                        floating.visible = false;
-
-                        // 交换
-                        for (int j = 0; j < 2; j++) {
-                            if (order[j] == from) {
-                                order[j] = order[1 - j];
-                                order[1 - j] = from;
-                                break;
-                            }
-                        }
-                        rebuildBlocks(content, items, order, dragIdx, floating);
-                    }
-                });
-
-                block.update(() -> {
-                    block.setColor(dragIdx[0] == itemIdx ? Color.yellow : Pal.accent);
-                });
-
-                content.add(block).size(100f, 50f).pad(10f).row();
-            }
-        }
-
-        /** 统计指定组的方向数量 */
-        int countGroupSize(int[][] groups, int in, int group) {
-            int count = 0;
-            for (int d = 0; d < 4; d++) {
-                if (groups[in][d] == group) count++;
-            }
-            return count;
-        }
-
-        /** 找到最大组号 */
-        int findMaxGroup(int[][] groups, int in) {
-            int max = -1;
-            for (int d = 0; d < 4; d++) {
-                if (groups[in][d] > max) max = groups[in][d];
-            }
-            return max;
-        }
-
-        /** 组号数组（临时存储，用于落点检测） */
-        final int[][] groupNums = new int[1][4];
-
-        /** 检测落点是否在某个组框内 */
-        int hitTestGroup(float sceneX, float sceneY) {
-            // 需要在 rebuild 中设置 groupBoxes
-            return -1; // 占位，实际在 rebuild 中实现
-        }
-
-        /** 找到插入点位置 */
-        int findInsertPosition(float sceneY) {
-            return -1; // 占位，实际在 rebuild 中实现
-        }
-
-        /** 更新插入点显示 */
-        void updateInsertPoint(int position) {
-            // 占位
-        }
-
-        /** 清除插入点 */
-        void clearInsertBoxes() {
-            if (currentInsertBox != null) {
-                currentInsertBox.remove();
-                currentInsertBox = null;
-                currentInsertPosition = -1;
-            }
-        }
-
-
-        /** 经典配置面板：模板一键应用 + 全局输出优先级 + 按方向覆盖（折叠高级层） */
-        void buildConfigurationLegacy(Table table) {
             // 背景放在内容包裹表 bg 上：bg 尺寸完全由内容决定，
             // 覆盖层展开时 bg 随之变高，背景才能拉长覆盖全部内容
             // （外层 table 由游戏配置面板容器固定尺寸，背景画在其上不会跟随内容增长）
@@ -895,9 +634,6 @@ public class UniversalJunction extends Block {
             final int[] selDir = {0};
             final boolean[] expanded = {false};
             final boolean[] manageOpen = {false};
-            // #11: tapOpen 改为 [输入方向][输出方向]，跨方向切换保持折叠状态
-            final boolean[][] tapOpen = new boolean[4][4];
-            final boolean[] hoverOpen = new boolean[4];
             Table globalTable = new Table();
             Table noteTable = new Table();
             Table overrideTable = new Table();
@@ -933,6 +669,8 @@ public class UniversalJunction extends Block {
                         }, () -> {
                             selDir[0] = dir;
                             r[1].run();
+                            // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
                         }).size(72f, 36f).pad(3f).get();
                         btn.update(() -> btn.setChecked(selDir[0] == dir));
                     }
@@ -940,22 +678,36 @@ public class UniversalJunction extends Block {
 
                 int in = selDir[0];
                 overrideTable.add(Core.bundle.format("universal-junction.from", dirName(in))).color(Pal.accent).padBottom(4f).row();
-                // #12: 存储折叠文字/数值 Label 引用，per-frame lambda 自动增量更新
-                final Label[] oFoldLabels = new Label[4];
-                final Label[] oValLabels = new Label[4];
+                final boolean[] tapOpen = new boolean[4];
+                final boolean[] hoverOpen = new boolean[4];
                 final Table[] rows = new Table[4];
                 for (int d = 0; d < 4; d++) {
                     final int out = d;
                     Table row = new Table();
+                    // hover/exited 监听仅注册一次；只改状态标志（重叠层 alpha 淡入淡出自动响应，不重建行）
                     row.hovered(() -> hoverOpen[out] = true);
                     row.exited(() -> hoverOpen[out] = false);
                     rows[out] = row;
-                    renderRow(row, weights[in], out, tapOpen[in], hoverOpen, v -> {
+                    renderRow(row, weights[in], out, tapOpen, hoverOpen, v -> {
                         weights[in][out] = v;
-                        // #12: 不再重建兄弟行——per-frame lambda 自动检测折叠文字变化并更新
+                        // 值组可能变化：刷新其他行的折叠文字（当前行保持滑块不重建）
+                        for (int k = 0; k < 4; k++) {
+                            if (k == out) continue;
+                            final int kk = k;
+                            renderRow(rows[kk], weights[in], kk, tapOpen, hoverOpen, x -> {
+                                weights[in][kk] = x;
+                                noteR.run();
+                                // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
+                                markConfigDirty();
+                            });
+                        }
+                        // 覆盖状态可能变化：刷新全局区"已单独配置"提示
                         noteR.run();
-                        markConfigDirty();
-                    }, oFoldLabels, oValLabels);
+                        // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
+                        markConfigDirty(); // 节流发送
+                    });
                     overrideTable.add(row).growX().padBottom(2f).row();
                 }
                 overrideTable.table(quick -> {
@@ -963,22 +715,28 @@ public class UniversalJunction extends Block {
                         setAllFor(selDir[0], 2);
                         r[1].run();
                         noteR.run();
+                        // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
                         flushConfig();
                     }).size(96f, 32f).pad(3f);
                     quick.button(Core.bundle.get("universal-junction.clear"), () -> {
                         setAllFor(selDir[0], 0);
                         r[1].run();
                         noteR.run();
+                        // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
                         flushConfig();
                     }).size(96f, 32f).pad(3f);
                     quick.button(Core.bundle.get("universal-junction.reset"), () -> {
                         resetToDefault(selDir[0]);
                         r[1].run();
                         noteR.run();
+                        // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
                         flushConfig();
                     }).size(96f, 32f).pad(3f);
                 }).padTop(4f).row();
-                // 全部恢复为全局：加确认弹窗防误触
+                // 全部恢复为全局：一键取消所有输入方向的覆盖，全局修改立即生效
                 overrideTable.button(Core.bundle.get("universal-junction.resetAll"), () -> {
                     for (int i = 0; i < 4; i++) resetToDefault(i);
                     r[1].run();
@@ -987,7 +745,7 @@ public class UniversalJunction extends Block {
                     table.invalidateHierarchy();
                     flushConfig();
                 }).size(220f, 32f).padTop(4f);
-                overrideTable.invalidateHierarchy();
+                overrideTable.invalidateHierarchy(); // 局部刷新覆盖层（不影响全局滑块拖动）
             };
 
             // 重建全局层（全局默认行 4 个滑块；覆盖提示行在 noteTable，由 noteR 单独刷新）
@@ -995,13 +753,11 @@ public class UniversalJunction extends Block {
                 globalTable.clearChildren();
                 final boolean[] gtap = new boolean[4];
                 final boolean[] ghover = new boolean[4];
-                // #12: 存储全局行的折叠文字/数值 Label 引用
-                final Label[] gFoldLabels = new Label[4];
-                final Label[] gValLabels = new Label[4];
                 final Table[] grows = new Table[4];
                 for (int d = 0; d < 4; d++) {
                     final int out = d;
                     Table row = new Table();
+                    // hover/exited 监听仅注册一次；只改状态标志（重叠层 alpha 淡入淡出自动响应，不重建行）
                     row.hovered(() -> ghover[out] = true);
                     row.exited(() -> ghover[out] = false);
                     grows[out] = row;
@@ -1010,11 +766,28 @@ public class UniversalJunction extends Block {
                         // 无条件跟随：全局修改穿透所有输入方向的该输出维度（含被覆盖方向），
                         // 覆盖方向的其他输出维度仍保持独立
                         for (int in = 0; in < 4; in++) weights[in][out] = v;
-                        // #12: 不再重建兄弟行——per-frame lambda 自动检测折叠文字变化并更新
+                        // 刷新全局区其他行的折叠文字（同值组可能变化；当前行保持滑块不重建）
+                        for (int k = 0; k < 4; k++) {
+                            if (k == out) continue;
+                            final int kk = k;
+                            renderRow(grows[kk], defaultRow, kk, gtap, ghover, x -> {
+                                defaultRow[kk] = x;
+                                for (int in = 0; in < 4; in++) weights[in][kk] = x;
+                                r[1].run();
+                                noteR.run();
+                                // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
+                                markConfigDirty();
+                            });
+                            grows[kk].invalidateHierarchy(); // 局部刷新其他行（不影响拖动中的当前行）
+                        }
+                        // 刷新覆盖层滑块显示与全局提示（不重建正在拖动的滑块本身）
                         r[1].run();
                         noteR.run();
+                        // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
                         markConfigDirty();
-                    }, gFoldLabels, gValLabels);
+                    });
                     globalTable.add(row).growX().padBottom(2f).row();
                 }
             };
@@ -1041,13 +814,15 @@ public class UniversalJunction extends Block {
                         t.button(Core.bundle.get("universal-junction.delete"), () -> {
                             deleteTemplate(name);
                             r[3].run();
+                            // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
                         }).size(56f, 28f).pad(2f);
                     }).padBottom(3f).row();
                 }
                 manageTable.add(Core.bundle.get("universal-junction.builtinTemplates")).color(Pal.accent).padBottom(3f).padTop(4f).row();
-                for (int i = 0; i < BUILTIN_TEMPLATE_KEYS.length; i++) {
-                    final String name = Core.bundle.get(BUILTIN_TEMPLATE_KEYS[i]);
-                    final int[] row = BUILTIN_TEMPLATE_ROWS[i];
+                for (int i = 0; i < builtinTemplateKeys.length; i++) {
+                    final String name = Core.bundle.get(builtinTemplateKeys[i]);
+                    final int[] row = builtinTemplateRows[i];
                     manageTable.table(t -> {
                         t.add(name).left().padRight(8f);
                         t.button(Core.bundle.get("universal-junction.use"), () -> {
@@ -1071,11 +846,13 @@ public class UniversalJunction extends Block {
             // 模板区：仅 [保存] [管理] 两个按钮（模板使用与删除均在管理区）
             bg.table(top -> {
                 top.button(Core.bundle.get("universal-junction.save"), () -> {
-                    Vars.ui.showTextInput("", Core.bundle.get("universal-junction.saveTitle"), 12, "", text -> {
+                    ui.showTextInput("", Core.bundle.get("universal-junction.saveTitle"), 12, "", text -> {
                         String name = text.trim();
                         if (!name.isEmpty()) {
                             saveTemplate(name, currentTemplate()); // 保存完整 4 方向权重矩阵
                             r[3].run();
+                            // 拖动/刷新路径不显式 invalidateHierarchy：Table 内容变化自动局部布局，
+                        // 全局重排会打断拖动中的滑块
                         }
                     });
                 }).size(88f, 40f).padRight(6f);
@@ -1109,33 +886,6 @@ public class UniversalJunction extends Block {
             bg.add(overrideTable).growX().padTop(4f);
 
             r[2].run(); // 初始渲染
-        }
-
-        // ---------- 禁用方向视觉反馈 ----------
-
-        @Override
-        public void drawSelect() {
-            super.drawSelect();
-            // 在禁用方向的连接边处标记红色短线（装卸器风格），提示该方向输出被禁用
-            for (int d = 0; d < 4; d++) {
-                if (!isDisabled(d)) continue;
-                int angle = cardinalToAngle(d);
-                Building near = nearby(angle);
-                if (near == null || near.team != team) continue;
-                // 连接边中点（方块交界处）
-                float cx = x + Geometry.d4x[angle] * tilesize * 0.5f;
-                float cy = y + Geometry.d4y[angle] * tilesize * 0.5f;
-                // 沿边方向画一条短线（垂直于连接方向的短横杠）
-                float hw = 5f; // 半宽
-                float hh = 1.5f; // 半厚
-                float cos = Geometry.d4y[angle]; // 垂直方向 x 分量
-                float sin = Geometry.d4x[angle]; // 垂直方向 y 分量
-                Draw.color(Color.red, 0.7f);
-                // 画旋转的矩形：沿边方向为长轴
-                Draw.rect(Core.atlas.white(), cx + cos * hw * 0.5f, cy + sin * hw * 0.5f, hw, hh, (float) Math.atan2(sin, cos) * Mathf.radDeg);
-                Draw.rect(Core.atlas.white(), cx - cos * hw * 0.5f, cy - sin * hw * 0.5f, hw, hh, (float) Math.atan2(sin, cos) * Mathf.radDeg);
-                Draw.color();
-            }
         }
 
         // ---------- 存档 ----------

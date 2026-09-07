@@ -73,7 +73,9 @@ public class SignalSpectrum {
 
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
             // 色板按 0 基索引（CH_COLORS 长 5），信道号 1 基——处处减一，勿直接用信道号索引
-            int c = ch - 1;
+            // lambda 捕获要求实际最终变量：c（0基色板）与 ci（信道副本）均为每轮新建
+            final int c = ch - 1;
+            final int ci = ch;
             Table row = new Table();
             // 信道色块 + 号
             row.add(new Image(Tex.whiteui)).color(CH_COLORS[c]).size(10f, 10f).padRight(4f);
@@ -88,9 +90,9 @@ public class SignalSpectrum {
             itfLabels[ch] = itf;
             // 有效强度条（Prov<CharSequence> 构造器：值标签逐帧渲染，无逐帧分配）
             row.add(new Bar(
-                    () -> fmtEff(effBuf[ch]),
+                    () -> fmtEff(effBuf[ci]),
                     () -> CH_COLORS[c],
-                    () -> effBuf[ch] / 15f
+                    () -> effBuf[ci] / 15f
             )).growX().minWidth(78f).height(18f);
 
             parent.add(row).growX().colspan(4).pad(1f);

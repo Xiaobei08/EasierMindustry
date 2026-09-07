@@ -5,6 +5,8 @@ import arc.Events;
 import arc.func.Cons;
 import arc.graphics.Color;
 import arc.graphics.g2d.TextureRegion;
+import arc.input.KeyBind;
+import arc.input.KeyCode;
 import arc.scene.style.TextureRegionDrawable;
 import arc.scene.ui.TextField;
 import arc.util.Time;
@@ -38,6 +40,8 @@ import static mindustry.Vars.*;
 
 public class Silicon extends Mod {
     public static Mods.LoadedMod MOD;
+    /** 信号覆盖视角按键绑定（默认 H，官方 KeyBind 通道；覆盖绘制的切换/按住判定经此绑定，可在设置中重绑定） */
+    public static KeyBind keySignalView;
 
     /**
      * 自定义设置项：在设置表中插入任意内容（分隔线、按钮等）。
@@ -79,6 +83,9 @@ public class Silicon extends Mod {
 
     @Override
     public void init() {
+        // 信号覆盖视角键注册（默认 H）：走官方 KeyBind 系统，玩家可在 设置→按键 中重绑定；
+        // SignalOverlay.update 经 keyDown(keySignalView) 判定（Tap 边沿检测仍在 overlay 内做）
+        keySignalView = KeyBind.add("silicon_signal_view", KeyCode.h, "silicon");
         // 信号源/中继器按队缓存也在世界加载时失效重建（读档后建筑重新加入 Groups.build）。
         // 注:hub network id 计数器不再在此 reset——读档顺序是构造(占号)→read 用存档 id
         // 覆盖→WorldLoadEvent,reset 反而制造撞号;现由 ItemTransferHubBuild.read() 调

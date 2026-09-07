@@ -5,7 +5,6 @@ import arc.Events;
 import arc.graphics.Color;
 import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.Fill;
-import arc.input.KeyCode;
 import arc.math.Mathf;
 import arc.math.geom.Rect;
 import arc.scene.ui.Label;
@@ -232,7 +231,9 @@ public class SignalOverlay {
         if (player == null) return;
         Team team = player.team();
         boolean toggleMode = Core.settings.getBool("signal.hkey.toggle", true);
-        boolean hold = Core.input.keyDown(KeyCode.h);
+        // H 键走官方 KeyBind 通道（Silicon.init 注册，默认 H，可在按键设置重绑定；
+        // headless 下 bind 未注册/无输入源时恒为 false，覆盖层在专用服务器本就不绘制）
+        boolean hold = silicon.Silicon.keySignalView != null && Core.input.keyDown(silicon.Silicon.keySignalView);
         // 无论设置开关如何，按住 H 始终显示信号强度
         if (toggleMode) {
             // 切换模式：按一下 H 翻转切换状态（按住优先显示）

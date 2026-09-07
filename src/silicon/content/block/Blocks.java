@@ -19,6 +19,7 @@ import silicon.world.blocks.sandbox.PowerSource;
 import silicon.world.blocks.satellite.SatelliteConsole;
 import silicon.world.blocks.satellite.SatelliteLauncher;
 import silicon.world.blocks.signal.DimensionAnchor;
+import silicon.world.blocks.signal.SignalDetector;
 import silicon.world.blocks.signal.SignalJammer;
 import silicon.world.blocks.signal.SignalRelay;
 import silicon.world.blocks.signal.SignalSource;
@@ -29,7 +30,7 @@ public class Blocks {
     public static Block powerGeneratorPump, dualPurposeJunction, dualPurposeStorager,
             rollGenerator, powerProtector, powerSource, mineConverter, theSwitch, itemTransferHub,
             dimensionAnchor, signalSource, universalJunction, signalRelay, signalJammer,
-            satelliteLauncher, satelliteConsole;
+            satelliteLauncher, satelliteConsole, signalDetector;
 
     public static void load() {
         powerGeneratorPump = new GeneratorPump("power-generator-pump") {{
@@ -155,6 +156,14 @@ public class Blocks {
             alwaysUnlocked = true;
             size = 3;
             health = 400;
+        }};
+        // 信号检测器注册在最后：保证旧存档方块 ID 不被后续新增方块打乱（纯测量设备，无游戏逻辑）
+        signalDetector = new SignalDetector("signal-detector") {{
+            requirements(Category.effect, BuildVisibility.shown,
+                    ItemStack.with(Items.copper, 5, Items.silicon, 4));
+            alwaysUnlocked = true;
+            size = 1;
+            health = 60;
         }};
     }
 }

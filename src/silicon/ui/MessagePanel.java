@@ -566,11 +566,11 @@ public class MessagePanel extends Table implements MessageSystem.Listener {
         this.scrollToTopSoon();
     }
 
-    /** 触发「消息到达」音效：静音消息不播；指定了音效用之；否则播放默认 {@code new-message} 音效（不可用则静默）。 */
+    /** 触发「消息到达」音效：静音消息不播；按消息源设定经 {@link SiliconSounds#playMessage} 播放
+     *  自定义音效，未设定回退面板默认 {@code new-message}（自动注册表不可用时静默）。 */
     private void playArrivalSound(Message msg) {
         if (msg == null || msg.silent || Vars.headless) return;
-        Sound s = msg.sound != null ? msg.sound : SiliconSounds.newMessage();
-        if (s != null) s.play();
+        SiliconSounds.playMessage(msg.sound);
     }
 
     @Override

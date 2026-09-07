@@ -39,7 +39,6 @@ import silicon.util.MessageSystem;
 import silicon.util.MessageSystem.Handshake;
 import silicon.util.MessageSystem.Message;
 import silicon.util.MessageSystem.MessageType;
-import silicon.util.SiliconSounds;
 
 import static mindustry.Vars.control;
 import static mindustry.Vars.state;
@@ -717,8 +716,8 @@ public class PowerProtector extends PowerGenerator {
                         .icon(Icon.power)
                         .type(MessageType.PERSISTENT)
                         .team(team)
-                        // 消息弹出时播放警示音效（面板在该消息到达时播放；联网时经 MessageSync 同步音效资源名）
-                        .sound(SiliconSounds.powerProtector())
+                        // 消息弹出时播放警示音效（面板在该消息到达时播放；以资源名指定，专用服务器等无音频进程也能跨进程传名）
+                        .sound("power-protector")
                         // 可用保护时间实时刷新：直读全队时间池，避免绑定某台可能被拆除的保护器
                         .var(() -> Strings.fixed(Math.max(0f, pool(team).remainingProtectionTime / 60f), 1))
                         // 探活器：只要该队仍有保护器在保护，消息就保持占位

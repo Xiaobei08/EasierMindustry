@@ -388,6 +388,7 @@ public class MessageSystem {
         m.content = net.content;
         m.silent = net.silent;
         m.sound = net.sound;
+        m.soundName = net.soundName;
     }
 
     /** 生成一条默认内容样式的消息（展开/收起共用结构，收起时仅显示图标）。 */
@@ -519,6 +520,9 @@ public class MessageSystem {
         public Runnable onClick;
         /** 收到消息时播放的音效（由面板在该消息到达时触发）；null = 使用默认 {@code new-message} 音效。 */
         public Sound sound;
+        /** 到达音效的资源名（{@code assets/sounds/} 下，不含扩展名）：网络/镜像序列化的规范键。
+         *  权威进程即使音频不可用（如专用服务器）也能预先保留名字，由客户端按名解析；null/空 = 未指定（回退默认音效）。 */
+        public String soundName;
         /** 静音：将该消息标记为不播放任何到达音效（优先级高于 {@link #sound}）。 */
         public boolean silent;
         /** 徒时消息的显示时限（秒）：玩家已读后到点由<b>各自面板</b>本地移除；&lt;0 表示不设时限（常驻）。持续型消息忽略本设置。 */
@@ -616,8 +620,22 @@ public class MessageSystem {
          */
         public Message onClick(Runnable r) { this.onClick = r; return this; }
         /** 指定收到消息时播放的音效（面板在该消息到达时触发）；null = 回退默认 {@code new-message} 音效。
-         *  常用模组音效见 {@link SiliconSounds}，也可用原版 {@code Sounds.*}/自定义 {@code arc.audio.Sound}。 */
-        public Message sound(Sound s) { this.sound = s; return this; }
+         *  常用模组音效见 {@link SiliconSounds}，也可用原版 {@code Sounds.*}/自定义 {@code arc.audio.Sound}。
+         *  序列化按 {@link SiliconSounds#nameOf} 推导资源名跨进程传递；在<b>音频不可用</b>的权威进程
+         *  （如专用服务器）上创建的消息请改用 {@link #sound(String)} 以名字指定。 */
+        public Message sound(Sound s) {
+            this.sound = s;
+            this.soundName = s != null ? SiliconSounds.nameOf(s) : null;
+            return this;
+        }
+        /** 按<b>资源名</b>指定收到消息时播放的音效（{@code assets/sounds/} 下某 {@code .ogg} 的文件名，不含扩展名）。
+         *  即使本进程音频不可用（如专用服务器）也会保留名字，由各客户端按名解析播放；名字为空 / 未注册时
+         *  回退默认 {@code new-message} 音效。 */
+        public Message sound(String name) {
+            this.soundName = name;
+            this.sound = name != null ? SiliconSounds.get(name) : null;
+            return this;
+        }
         /** 静音：该消息到达时不播放任何音效（优先级高于 {@link #sound(Sound)}）。
          *  用于不希望打扰玩家的后台级消息。 */
         public Message silent() { this.silent = true; return this; }

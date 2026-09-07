@@ -178,6 +178,7 @@ public class MessageSync implements MessageSystem.Listener {
         target.content = src.content;
         target.silent = src.silent;
         target.sound = src.sound;
+        target.soundName = src.soundName;
     }
 
     /** 校验请求者确实持有 {@code senderKey} 指向的来源方块（坐标解码与 {@link #sweepClientMessages()} 一致）。
@@ -335,7 +336,7 @@ public class MessageSync implements MessageSystem.Listener {
         out.writeUTF(m.currentTitle() != null ? m.currentTitle() : "");
         out.writeUTF(m.currentContent() != null ? m.currentContent() : "");
         out.writeBoolean(m.silent);
-        out.writeUTF(soundName(m.sound));
+        out.writeUTF(wireSoundName(m));
         out.writeLong(m.senderKey);
     }
 
@@ -384,6 +385,7 @@ public class MessageSync implements MessageSystem.Listener {
             m.contentKey = contentKey.isEmpty() ? null : contentKey;
         }
         m.silent = silent;
+        m.soundName = soundName;
         m.sound = !silent ? resolveSound(soundName) : null;
         m.senderKey = senderKey;
         return m;
@@ -490,9 +492,11 @@ public class MessageSync implements MessageSystem.Listener {
         return d != null ? d : Icon.info;
     }
 
-    /** 音效 → 资源名（按音频文件的文件名，不含扩展名）；未设置或不可用时回空串（客户端回退默认音效）。 */
-    private static String soundName(Sound s) {
-        return s != null && s.file != null ? s.file.nameWithoutExtension() : "";
+    /** 消息 → 声音资源名（序列化用）：优先消息源显式保存的名字（音频不可用的权威进程也可靠），
+     *  否则回退经 {@link SiliconSounds#nameOf} 从音效对象推导。 */
+    private static String wireSoundName(Message m) {
+        if (m.soundName != null && !m.soundName.isEmpty()) return m.soundName;
+        return SiliconSounds.nameOf(m.sound);
     }
 
     /** 资源名 → 音效（客户端解析模组音频）；空串/null 表示未指定（由面板播放默认 new-message） */

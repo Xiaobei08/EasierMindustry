@@ -115,12 +115,14 @@ public class Silicon extends Mod {
         Events.on(EventType.ClientLoadEvent.class, e -> {
             ui.settings.addCategory("@settings.silicon.meta.category.name",
                     new TextureRegionDrawable(new TextureRegion(Silicon.MOD.iconTexture)), st -> {
-                // —— 方块搜索设置 ——
+
+                // —— 方块搜索 ——
+                addSection(st, "setting.silicon.group.blocksearch");
                 st.checkPref("blocksearch.showHistory", true);
                 st.checkPref("blocksearch.clearOnSelect", true);
-                // 灰色细线：方块搜索与消息面板设置分隔（注册为设置项，rebuild 时保留）
-                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
-                // —— 消息面板设置 ——
+
+                // —— 消息面板 ——
+                addSection(st, "setting.silicon.group.messagepanel");
                 // 宽度（屏幕宽百分比，20%~50%）与最高位置（屏幕高百分比，20%~80%）
                 st.sliderPref(MessagePanel.SET_WIDTH, (int) MessagePanel.DEFAULT_WIDTH_PERCENT,
                         (int) MessagePanel.MIN_WIDTH_PERCENT, (int) MessagePanel.MAX_WIDTH_PERCENT, 5,
@@ -131,9 +133,9 @@ public class Silicon extends Mod {
                 st.sliderPref(MessageSystem.SET_MAX_MESSAGES, MessageSystem.DEFAULT_MAX_MESSAGES,
                         MessageSystem.MIN_MAX_MESSAGES, MessageSystem.MAX_MAX_MESSAGES, 5,
                         i -> i + "", i -> MessagePanel.applySettings());
-                // 灰色细线：消息面板设置与暂停设置分隔（注册为设置项，rebuild 时保留）
-                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
-                // —— 暂停设置 ——
+
+                // —— 多人暂停 ——
+                addSection(st, "setting.silicon.group.pause");
                 st.sliderPref("pauseMode", 0, 0, 2, 1,
                         i -> Core.bundle.get("setting.pauseMode.value." + i, String.valueOf(i)),
                         i -> {
@@ -142,25 +144,30 @@ public class Silicon extends Mod {
                         });
                 st.checkPref("pauseRequest", true);
                 st.pref(new CustomSetting(t -> t.button(Core.bundle.get("setting.pauseWhitelist.name"), Styles.defaultt, Silicon::showWhitelistDialog).width(200f).padTop(6f)));
-                // 灰色细线：更新区与上方设置分隔（注册为设置项，rebuild 时保留）
-                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
-                // —— 更新设置 ——
-                st.checkPref("updatecheck.autoCheck", true);
-                st.pref(new CustomSetting(t -> t.button(Core.bundle.get("setting.checkUpdate.name"), Styles.defaultt, () -> UpdateChecker.check(true)).width(200f).padTop(6f)));
-                // 灰色细线：更新区与信号/中枢显示设置分隔（注册为设置项，rebuild 时保留）
-                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
-                // —— 信号显示设置 ——
+
+                // —— 信号显示 ——
+                addSection(st, "setting.silicon.group.signal");
                 st.checkPref("signal.hkey.toggle", true);
                 // 数字模式 / 范围模式透明度（0~100%）
                 st.sliderPref("signal.digitAlpha", 80, 0, 100, 5,
                         i -> Core.bundle.format("setting.signal.digitAlpha.value", i));
                 st.sliderPref("signal.rangeAlpha", 45, 0, 100, 5,
                         i -> Core.bundle.format("setting.signal.rangeAlpha.value", i));
-                // —— 中枢物流调试与连线 ——
+
+                // —— 物流中枢 ——
+                addSection(st, "setting.silicon.group.hub");
                 st.checkPref("hubDebugLog", false, v -> silicon.world.blocks.distribution.ItemTransferHub.debugFlows = v);
                 st.sliderPref("hubLinkOpacity", 100, 0, 100, 5, i -> i + "%");
-                // —— 万向交叉器界面 ——
+
+                // —— 界面 ——
+                addSection(st, "setting.silicon.group.ui");
                 st.checkPref("universal-junction.newUI", false);
+
+                // —— 更新 ——
+                addSection(st, "setting.silicon.group.update");
+                st.checkPref("updatecheck.autoCheck", true);
+                st.pref(new CustomSetting(t -> t.button(Core.bundle.get("setting.checkUpdate.name"), Styles.defaultt, () -> UpdateChecker.check(true)).width(200f).padTop(6f)));
+
                 // 灰色细线：与「恢复默认设置」分隔（注册为设置项，rebuild 时保留）
                 st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
 
@@ -354,5 +361,17 @@ public class Silicon extends Mod {
                 Call.infoMessage(p.con, "[accent]Whitelist: " + list);
                 break;
         }
+    }
+
+    /**
+     * 在设置表中插入一个「分类标题」：上方灰色分隔横线 + 强调色分类名（左对齐）。
+     * 注册为设置项，rebuild（恢复默认/切换分类）时自动保留。
+     */
+    private static void addSection(SettingsMenuDialog.SettingsTable st, String labelKey) {
+        st.pref(new CustomSetting(t -> {
+            t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(2f);
+            t.row();
+            t.add(Core.bundle.get(labelKey)).color(Pal.accent).fontScale(1.1f).padTop(2f).padBottom(4f).left();
+        }));
     }
 }

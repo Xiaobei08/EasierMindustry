@@ -72,29 +72,30 @@ public class SignalSpectrum {
         parent.row();
 
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
-            int c = ch;
+            // 色板按 0 基索引（CH_COLORS 长 5），信道号 1 基——处处减一，勿直接用信道号索引
+            int c = ch - 1;
             Table row = new Table();
             // 信道色块 + 号
             row.add(new Image(Tex.whiteui)).color(CH_COLORS[c]).size(10f, 10f).padRight(4f);
-            row.add(String.valueOf(c)).width(12f).center();
+            row.add(String.valueOf(ch)).width(12f).center();
             // 占用计数（节流刷新）
             LabelRef occ = new LabelRef();
             occ.label = row.add("").center().color(Color.lightGray).minWidth(58f).get();
-            occLabels[c] = occ;
+            occLabels[ch] = occ;
             // 本点干扰功率 I
             LabelRef itf = new LabelRef();
             itf.label = row.add("").center().color(Color.lightGray).minWidth(46f).get();
-            itfLabels[c] = itf;
+            itfLabels[ch] = itf;
             // 有效强度条（Prov<CharSequence> 构造器：值标签逐帧渲染，无逐帧分配）
             row.add(new Bar(
-                    () -> fmtEff(effBuf[c]),
+                    () -> fmtEff(effBuf[ch]),
                     () -> CH_COLORS[c],
-                    () -> effBuf[c] / 15f
+                    () -> effBuf[ch] / 15f
             )).growX().minWidth(78f).height(18f);
 
             parent.add(row).growX().colspan(4).pad(1f);
             parent.row();
-            rowTables[c] = row;
+            rowTables[ch] = row;
         }
 
         parent.update(() -> {

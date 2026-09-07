@@ -18,6 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Evaluate vote
-        uses: myyk/git-democracy@v2
+        uses: Xiaobei09/git-democracy@main
         with:
-          configPath: .github/workflows
+          configPath: .

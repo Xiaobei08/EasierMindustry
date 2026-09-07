@@ -268,6 +268,9 @@ public class SignalRelay extends Block {
                 // 清除按钮（跨满整行居中，与标题/按钮对齐）
                 t.button(Core.bundle.get("block.silicon-signal-relay.source.clear"), Styles.defaultt,
                         () -> configure("")).colspan(SignalJammer.CHANNEL_MAX).center().size(88f, 40f).padTop(2f);
+                t.row();
+                // 信号频谱：本点 5 信道占用/干扰/可用强度（当前转发信道行高亮）
+                silicon.ui.SignalSpectrum.buildSection(t, this, () -> signalChannel());
                 // 实时刷新：信号源列表变化（增删/编号变更）时重建按钮区（保持搜索过滤；点击不受影响）
                 lastSrcSignature = "";
                 pane.update(() -> {

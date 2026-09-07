@@ -242,6 +242,9 @@ public class SignalSource extends Block {
                     group.add(btn);
                     t.add(btn).size(44f, 40f).pad(1f);
                 }
+                t.row();
+                // 信号频谱：本点 5 信道占用/干扰/可用强度（SINR 制的信道选择对策信息）
+                silicon.ui.SignalSpectrum.buildSection(t, this, () -> channel);
             }).pad(4f);
         }
 

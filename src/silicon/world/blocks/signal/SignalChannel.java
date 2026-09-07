@@ -168,6 +168,14 @@ public class SignalChannel {
      * 比逐信道调用 effective 快约 5 倍（覆盖绘制用）。
      */
     public static void effectiveAll(Team team, float wx, float wy, float[] effOut, Building[] srcOut) {
+        effectiveAll(team, wx, wy, effOut, srcOut, null);
+    }
+
+    /**
+     * 同上，额外把每信道"底噪+干扰总和"（SINR 分母 I）写入 intOut[1..5]——
+     * 频谱面板用它区分"本点干扰功率"与"可用有效强度"；传 null 等价于无干扰输出。
+     */
+    public static void effectiveAll(Team team, float wx, float wy, float[] effOut, Building[] srcOut, float[] intOut) {
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
             bestA[ch] = 0f;
             bestSrcA[ch] = null;
@@ -213,6 +221,7 @@ public class SignalChannel {
             float i = NOISE_FLOOR + otherA[ch] + aciA[ch] + jamA[ch];
             effOut[ch] = bestA[ch] * sinrQuality(bestA[ch], i);
             srcOut[ch] = bestSrcA[ch];
+            if (intOut != null) intOut[ch] = i;
         }
     }
 }

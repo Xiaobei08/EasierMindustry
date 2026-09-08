@@ -218,6 +218,11 @@ public class SignalSource extends Block {
             return SignalSource.strengthAt(x, y, wx, wy);
         }
 
+        /** 是否正在发射信号（与 strengthAt 的前置条件一致；频谱面板的占用计数以此为准，只数实际发射的源） */
+        public boolean emitting() {
+            return signal != null && hasPower() && enabled;
+        }
+
         /** 配置面板（选择信道界面，灰底面板）：顶部显示本信号源编号，下方选信道 */
         @Override
         public void buildConfiguration(Table table) {

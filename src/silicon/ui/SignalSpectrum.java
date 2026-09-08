@@ -108,12 +108,15 @@ public class SignalSpectrum {
         parent.update(() -> {
             tick = (tick + 1) % 15;
             if (tick != 0) return;
+            // 建筑可能在面板打开期间被摧毁——失效后立即停止采样（面板由 BlockConfigFragment 隐藏）
+            if (at == null || !at.isValid()) return;
             SignalChannel.effectiveAll(at.team, at.x, at.y, effBuf, srcBuf, intBuf);
             int cur = currentChannel.get();
             for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
                 int src = 0, jam = 0;
+                // 占用计数与实际发射条件一致（signal/供电/enabled），断电或关闭的源不计入
                 for (SignalSource.SignalSourceBuild sb : SignalSource.allSources(at.team)) {
-                    if (sb.channel == ch) src++;
+                    if (sb.emitting() && sb.channel == ch) src++;
                 }
                 for (SignalRelay.SignalRelayBuild rb : SignalRelay.allRelays(at.team)) {
                     if (rb.active && rb.signalChannel() == ch) src++;

@@ -84,8 +84,11 @@ public class Silicon extends Mod {
     @Override
     public void init() {
         // 信号覆盖视角键注册（默认 H）：走官方 KeyBind 系统，玩家可在 设置→按键 中重绑定；
-        // SignalOverlay.update 经 keyDown(keySignalView) 判定（Tap 边沿检测仍在 overlay 内做）
-        keySignalView = KeyBind.add("silicon_signal_view", KeyCode.h, "silicon");
+        // SignalOverlay.update 经 keyDown(keySignalView) 判定（Tap 边沿检测仍在 overlay 内做）。
+        // KeyBind 属客户端 UI 资源——dedicated 服务器没有输入子系统，必须 headless 守卫
+        if (!headless) {
+            keySignalView = KeyBind.add("silicon_signal_view", KeyCode.h, "silicon");
+        }
         // 信号源/中继器按队缓存也在世界加载时失效重建（读档后建筑重新加入 Groups.build）。
         // 注:hub network id 计数器不再在此 reset——读档顺序是构造(占号)→read 用存档 id
         // 覆盖→WorldLoadEvent,reset 反而制造撞号;现由 ItemTransferHubBuild.read() 调
@@ -174,7 +177,14 @@ public class Silicon extends Mod {
                         SiliconLog.info("sat-launch: malformed packet (orbit) from " + p.name);
                         return;
                     }
-                    int result = SatelliteManager.launch(p.team(), parts[1].isEmpty() ? null : parts[1], orbit, cb.x, cb.y);
+                    // 信号编码校验：4 位字母数字或空（空=沿用控制台默认），防畸形输入进入管理器
+                    String sig = parts[1];
+                    if (!sig.isEmpty() && !sig.matches("[A-Za-z0-9]{4}")) {
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                        SiliconLog.info("sat-launch: malformed signal code from " + p.name);
+                        return;
+                    }
+                    int result = SatelliteManager.launch(p.team(), sig.isEmpty() ? null : sig, orbit, cb.x, cb.y);
                     if (result != SatelliteManager.LAUNCH_OK) {
                         Call.clientPacketReliable(p.con, "sat-result", String.valueOf(result));
                     }
@@ -295,10 +305,11 @@ public class Silicon extends Mod {
             // 不初始化的话每次启动都要重新关闭再打开才生效）
             silicon.world.blocks.distribution.ItemTransferHub.debugFlows = Core.settings.getBool("hubDebugLog", false);
 
-            // 卫星状态广播（服务器 → 客机）：应用主机权威状态（在轨数/归属信号/待发射数镜像）
-            netClient.addPacketHandler("sat-state", SatelliteManager::applyState);
+            // 卫星状态广播（服务器 → 客机）：应用主机权威状态（在轨数/归属信号/待发射数镜像）。
+            // 包处理器在网络线程回调——一切状态/UI 操作必须 post 回主线程
+            netClient.addPacketHandler("sat-state", s -> Core.app.post(() -> SatelliteManager.applyState(s)));
             // 发射失败反馈（服务器 → 请求者）
-            netClient.addPacketHandler("sat-result", (s) -> {
+            netClient.addPacketHandler("sat-result", s -> Core.app.post(() -> {
                 if (s.equals("disabled")) {
                     ui.showInfoToast(Core.bundle.get("block.silicon-satellite-console.disabled"), 3f);
                     return;
@@ -326,7 +337,7 @@ public class Silicon extends Mod {
                     ui.showInfoToast(Core.bundle.get(key), 3f);
                 } catch (NumberFormatException ignored) {
                 }
-            });
+            }));
         });
 
         Events.run(EventType.Trigger.update, () -> {

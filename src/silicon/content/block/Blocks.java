@@ -18,6 +18,7 @@ import silicon.world.blocks.production.MineConverter;
 import silicon.world.blocks.sandbox.PowerSource;
 import silicon.world.blocks.satellite.SatelliteConsole;
 import silicon.world.blocks.satellite.SatelliteLauncher;
+import silicon.world.blocks.sandbox.MessageTest;
 import silicon.world.blocks.signal.DimensionAnchor;
 import silicon.world.blocks.signal.SignalDetector;
 import silicon.world.blocks.signal.SignalJammer;
@@ -30,7 +31,7 @@ public class Blocks {
     public static Block powerGeneratorPump, dualPurposeJunction, dualPurposeStorager,
             rollGenerator, powerProtector, powerSource, mineConverter, theSwitch, itemTransferHub,
             dimensionAnchor, signalSource, universalJunction, signalRelay, signalJammer,
-            satelliteLauncher, satelliteConsole, signalDetector;
+            satelliteLauncher, satelliteConsole, messageTest, signalDetector;
 
     public static void load() {
         powerGeneratorPump = new GeneratorPump("power-generator-pump") {{
@@ -156,6 +157,13 @@ public class Blocks {
             alwaysUnlocked = true;
             size = 3;
             health = 400;
+        }};
+        // “消息测试”调试方块：上游 test（PR #58）既有注册位置（satelliteConsole 之后），不挪动以保上游存档 ID
+        messageTest = new MessageTest("message-test") {{
+            requirements(Category.effect, BuildVisibility.sandboxOnly, with());
+            alwaysUnlocked = true;
+            size = 1;
+            health = 60;
         }};
         // 信号检测器注册在最后：保证旧存档方块 ID 不被后续新增方块打乱（纯测量设备，无游戏逻辑）
         signalDetector = new SignalDetector("signal-detector") {{

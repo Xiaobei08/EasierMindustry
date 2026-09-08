@@ -6,18 +6,16 @@ import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.TextureRegion;
 import arc.math.Mathf;
 import arc.math.geom.Geometry;
-import arc.scene.ui.layout.Table;
 import arc.util.Eachable;
 import arc.util.Nullable;
-import arc.util.Time;
 import arc.util.io.Reads;
 import arc.util.io.Writes;
 import mindustry.Vars;
 import mindustry.entities.units.BuildPlan;
 import mindustry.gen.Building;
+import mindustry.gen.Sounds;
 import mindustry.gen.Unit;
 import mindustry.graphics.Drawf;
-import mindustry.ui.Styles;
 import mindustry.world.Block;
 import mindustry.world.Tile;
 import mindustry.world.meta.BlockGroup;
@@ -32,14 +30,12 @@ public class Switch extends Block {
         super(name);
         update = true;
         solid = true;
-        // 可配置:点击经 configTapped→configure 切换,联机下由服务器权威处理
-        // (原先 tapped() 只翻转本地字段,客户端的开关操作在服务器上从未发生)
-        configurable = true;
+        configurable = true; // 可配置：支持按钮式切换
+        sync = true; // 操纵另一端 enabled 的控制块：writeBase 服务器快照兜底（同原版 SwitchBlock）
         rotate = true;
         group = BlockGroup.logic;
-        // config 只改开关自身状态;对 front 的传播由 updateTile 在两端统一执行
-        // (#28 同队校验在 updateTile 内),两端状态自然收敛
-        config(Boolean.class, (SwitchBuild building, Boolean on) -> building.fE = on);
+        // 配置同步开关自身状态 fE（联网经 Call.tileConfig 全端一致）；front 目标由 updateTile 同帧应用
+        config(Boolean.class, (building, value) -> ((SwitchBuild) building).fE = value);
         state = new TextureRegion[2];
     }
 
@@ -101,21 +97,18 @@ public class Switch extends Block {
             if (front() != null && front().team == team && front().enabled != fE) front().enabled = fE;
         }
 
-        /** 点击方块=直接切换(与原版 SwitchBlock 同款):经 configure 走 tileConfig,
-         *  客户端本地预测+服务器权威执行;返回 false 不打开配置面板。 */
+/**
+         * 点按切换：对同队且非开关的目标建筑翻转其启用状态（标准 configure 链路，联网全端一致，
+         * 与原版 SwitchBlock 相同）。返回 false 表示不弹配置菜单——点按即切换。
+         */
         @Override
         public boolean configTapped() {
+            // #28 同队校验
             if (front() != null && front().team == team && !(front() instanceof SwitchBuild)) {
                 configure(!fE);
+                Sounds.click.at(this);
             }
             return false;
-        }
-
-        /** 面板按钮(仅当配置面板被外部打开时可见):同样走 configure。 */
-        @Override
-        public void buildConfiguration(Table table) {
-            table.button(Core.bundle.get("block.silicon-switch.name"), Styles.flatTogglet, () -> configure(!fE))
-                .size(80f, 40f).pad(4f);
         }
 
         /**

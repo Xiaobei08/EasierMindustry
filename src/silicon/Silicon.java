@@ -26,14 +26,19 @@ import silicon.content.SatelliteUnits;
 import silicon.content.block.Blocks;
 import silicon.content.item.Items;
 import silicon.util.SatelliteManager;
+import silicon.util.MessageSync;
+import silicon.util.MessageSystem;
 import silicon.util.SiliconLog;
 import silicon.util.SignalOverlay;
 import silicon.util.UpdateChecker;
+import silicon.world.blocks.distribution.ItemTransferHubNetwork;
+import silicon.world.blocks.distribution.ItemTransferHub;
 import silicon.world.blocks.power.PowerProtector;
 import silicon.world.blocks.production.MineConverter;
 import silicon.world.blocks.signal.SignalRelay;
 import silicon.world.blocks.signal.SignalSource;
 import silicon.ui.BlockSearch;
+import silicon.ui.MessagePanel;
 
 import static mindustry.Vars.*;
 
@@ -42,6 +47,10 @@ public class Silicon extends Mod {
     public static Mods.LoadedMod MOD;
     /** 信号覆盖视角按键绑定（默认 H，官方 KeyBind 通道；覆盖绘制的切换/按住判定经此绑定，可在设置中重绑定） */
     public static KeyBind keySignalView;
+    /** 常驻屏幕左边缘的消息面板实例（游戏中显示，PR #58 消息系统） */
+    public static MessagePanel messagePanel;
+    /** 消息面板开关按键绑定（默认 I，可在按键设置中重绑定） */
+    public static KeyBind keyToggleMessagePanel;
 
     /**
      * 自定义设置项：在设置表中插入任意内容（分隔线、按钮等）。
@@ -83,11 +92,11 @@ public class Silicon extends Mod {
 
     @Override
     public void init() {
-        // 信号覆盖视角键注册（默认 H）：走官方 KeyBind 系统，玩家可在 设置→按键 中重绑定；
-        // SignalOverlay.update 经 keyDown(keySignalView) 判定（Tap 边沿检测仍在 overlay 内做）。
+        // 信号覆盖视角键（默认 H）+ 消息面板开关键（默认 I，PR #58）：走官方 KeyBind 系统，可在 设置→按键 重绑定；
         // KeyBind 属客户端 UI 资源——dedicated 服务器没有输入子系统，必须 headless 守卫
         if (!headless) {
             keySignalView = KeyBind.add("silicon_signal_view", KeyCode.h, "silicon");
+            keyToggleMessagePanel = KeyBind.add("silicon_toggle_panel", KeyCode.i, "silicon");
         }
         // 信号源/中继器按队缓存也在世界加载时失效重建（读档后建筑重新加入 Groups.build）。
         // 注:hub network id 计数器不再在此 reset——读档顺序是构造(占号)→read 用存档 id
@@ -123,7 +132,10 @@ public class Silicon extends Mod {
 
         BlockSearch.init();
         MineConverter.initNetworking();
+        ItemTransferHub.initNetworking();
         SignalOverlay.init();
+        // 消息系统多人联网同步（nop 当不在服务器上时，仅注册事件处理器）
+        MessageSync.init();
 
         // 卫星发射请求（客机 → 服务器）：注册在 init 而非 ClientLoadEvent——dedicated 服务器（无客户端，
         // 不触发 ClientLoadEvent）也必须能处理发射请求。主机权威执行，失败原因定向回发，成功走全图播报+状态广播
@@ -262,12 +274,27 @@ public class Silicon extends Mod {
         Events.on(EventType.ClientLoadEvent.class, e -> {
             ui.settings.addCategory("@settings.silicon.meta.category.name",
                     new TextureRegionDrawable(new TextureRegion(Silicon.MOD.iconTexture)), st -> {
-                // —— 方块搜索设置 ——
+
+                // —— 方块搜索 ——
+                addSection(st, "setting.silicon.group.blocksearch");
                 st.checkPref("blocksearch.showHistory", true);
                 st.checkPref("blocksearch.clearOnSelect", true);
-                // 灰色细线：搜索设置与暂停设置分隔（注册为设置项，rebuild 时保留）
-                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
-                // —— 暂停设置 ——
+
+                // —— 消息面板 ——
+                addSection(st, "setting.silicon.group.messagepanel");
+                // 宽度（屏幕宽百分比，20%~50%）与最高位置（屏幕高百分比，20%~80%）
+                st.sliderPref(MessagePanel.SET_WIDTH, (int) MessagePanel.DEFAULT_WIDTH_PERCENT,
+                        (int) MessagePanel.MIN_WIDTH_PERCENT, (int) MessagePanel.MAX_WIDTH_PERCENT, 5,
+                        i -> i + "%", i -> MessagePanel.applySettings());
+                st.sliderPref(MessagePanel.SET_TOP, (int) MessagePanel.DEFAULT_TOP_PERCENT,
+                        (int) MessagePanel.MIN_TOP_PERCENT, (int) MessagePanel.MAX_TOP_PERCENT, 5,
+                        i -> i + "%", i -> MessagePanel.applySettings());
+                st.sliderPref(MessageSystem.SET_MAX_MESSAGES, MessageSystem.DEFAULT_MAX_MESSAGES,
+                        MessageSystem.MIN_MAX_MESSAGES, MessageSystem.MAX_MAX_MESSAGES, 5,
+                        i -> i + "", i -> MessagePanel.applySettings());
+
+                // —— 多人暂停 ——
+                addSection(st, "setting.silicon.group.pause");
                 st.sliderPref("pauseMode", 0, 0, 2, 1,
                         i -> Core.bundle.get("setting.pauseMode.value." + i, String.valueOf(i)),
                         i -> {
@@ -276,28 +303,42 @@ public class Silicon extends Mod {
                         });
                 st.checkPref("pauseRequest", true);
                 st.pref(new CustomSetting(t -> t.button(Core.bundle.get("setting.pauseWhitelist.name"), Styles.defaultt, Silicon::showWhitelistDialog).width(200f).padTop(6f)));
-                // 灰色细线：更新区与上方设置分隔（注册为设置项，rebuild 时保留）
-                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
-                // —— 更新设置 ——
-                st.checkPref("updatecheck.autoCheck", true);
-                st.pref(new CustomSetting(t -> t.button(Core.bundle.get("setting.checkUpdate.name"), Styles.defaultt, () -> UpdateChecker.check(true)).width(200f).padTop(6f)));
-                // 灰色细线：更新区与信号/中枢显示设置分隔（注册为设置项，rebuild 时保留）
-                st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
-                // —— 信号显示设置 ——
+
+                // —— 信号显示 ——
+                addSection(st, "setting.silicon.group.signal");
                 st.checkPref("signal.hkey.toggle", true);
                 // 数字模式 / 范围模式透明度（0~100%）
                 st.sliderPref("signal.digitAlpha", 80, 0, 100, 5,
                         i -> Core.bundle.format("setting.signal.digitAlpha.value", i));
                 st.sliderPref("signal.rangeAlpha", 45, 0, 100, 5,
                         i -> Core.bundle.format("setting.signal.rangeAlpha.value", i));
-                // —— 中枢物流调试与连线 ——
+
+                // —— 物流中枢 ——
+                addSection(st, "setting.silicon.group.hub");
                 st.checkPref("hubDebugLog", false, v -> silicon.world.blocks.distribution.ItemTransferHub.debugFlows = v);
                 st.sliderPref("hubLinkOpacity", 100, 0, 100, 5, i -> i + "%");
+
+                // —— 界面 ——
+                addSection(st, "setting.silicon.group.ui");
+                st.checkPref("universal-junction.newUI", false);
+
+                // —— 更新 ——
+                addSection(st, "setting.silicon.group.update");
+                st.checkPref("updatecheck.autoCheck", true);
+                st.pref(new CustomSetting(t -> t.button(Core.bundle.get("setting.checkUpdate.name"), Styles.defaultt, () -> UpdateChecker.check(true)).width(200f).padTop(6f)));
+
                 // 灰色细线：与「恢复默认设置」分隔（注册为设置项，rebuild 时保留）
                 st.pref(new CustomSetting(t -> t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(8f)));
 
                 SiliconLog.info("Loading settings.");
             });
+        });
+
+        Events.on(EventType.ClientLoadEvent.class, e -> {
+            // 初始化常驻左边缘的消息面板，加入 HUD 组
+            messagePanel = new MessagePanel();
+            MessagePanel.setInstance(messagePanel);
+            ui.hudGroup.addChild(messagePanel);
         });
 
         Events.on(EventType.ClientLoadEvent.class, e -> {
@@ -364,6 +405,16 @@ public class Silicon extends Mod {
             String msg = e.message;
             if (msg == null || !msg.startsWith("!pause")) return;
             handlePauseCommand(e.player, msg);
+        });
+
+        // —— 消息面板开关按键 ——
+        // 默认 I 键切换面板展开/收起（可在按键设置中重绑定，仅游戏内生效）
+        Events.run(EventType.Trigger.update, () -> {
+            if (!state.isGame()) return;
+            if (messagePanel != null && keyToggleMessagePanel != null
+                && Core.input.keyTap(keyToggleMessagePanel)) {
+                messagePanel.toggle();
+            }
         });
     }
 
@@ -456,5 +507,17 @@ public class Silicon extends Mod {
                 Call.infoMessage(p.con, "[accent]Whitelist: " + list);
                 break;
         }
+    }
+
+    /**
+     * 在设置表中插入一个「分类标题」：上方灰色分隔横线 + 强调色分类名（左对齐）。
+     * 注册为设置项，rebuild（恢复默认/切换分类）时自动保留。
+     */
+    private static void addSection(SettingsMenuDialog.SettingsTable st, String labelKey) {
+        st.pref(new CustomSetting(t -> {
+            t.image(Tex.whiteui).growX().height(2f).color(Pal.gray).padTop(8f).padBottom(2f);
+            t.row();
+            t.add(Core.bundle.get(labelKey)).color(Pal.accent).fontScale(1.1f).padTop(2f).padBottom(4f).left();
+        }));
     }
 }

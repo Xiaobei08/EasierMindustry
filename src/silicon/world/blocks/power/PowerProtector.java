@@ -2,8 +2,6 @@ package silicon.world.blocks.power;
 
 import arc.Core;
 import arc.Events;
-import arc.audio.Sound;
-import arc.files.Fi;
 import arc.graphics.Color;
 import arc.math.Mathf;
 import arc.scene.actions.Actions;
@@ -19,7 +17,6 @@ import arc.struct.ObjectMap;
 import arc.util.Align;
 import arc.util.Strings;
 import arc.util.Time;
-import arc.util.Tmp;
 import arc.util.io.Reads;
 import arc.util.io.Writes;
 import mindustry.core.UI;
@@ -27,6 +24,7 @@ import mindustry.game.EventType;
 import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.gen.Groups;
+import mindustry.gen.Icon;
 import mindustry.gen.Tex;
 import mindustry.graphics.Pal;
 import mindustry.ui.Bar;
@@ -37,11 +35,13 @@ import mindustry.world.blocks.power.PowerGenerator;
 import mindustry.world.meta.Env;
 import mindustry.world.meta.Stat;
 import mindustry.world.meta.StatUnit;
+import silicon.util.MessageSystem;
+import silicon.util.MessageSystem.Handshake;
+import silicon.util.MessageSystem.Message;
+import silicon.util.MessageSystem.MessageType;
 
 import static mindustry.Vars.control;
-import static mindustry.Vars.player;
 import static mindustry.Vars.state;
-import static mindustry.Vars.tree;
 import static mindustry.Vars.ui;
 
 /**
@@ -83,6 +83,27 @@ public class PowerProtector extends PowerGenerator {
     /** 取得（或创建）某队伍的时间池。 */
     static TeamPool pool(Team team) {
         return teamPools.get(team, TeamPool::new);
+    }
+
+    /**
+     * 全队「电力不足」持续型消息注册表（静态、以队伍为键）。
+     * <p>
+     * 多台保护器同队同时进入保护时只投递一条（首个触发者创建、其余复用），
+     * 解决「多保护器同时被触发 → 消息面板刷屏/重复」的问题。
+     * 该队没有任何保护器在保护时断开握手，由系统清除；WorldLoadEvent 时清空防跨存档污染。
+     */
+    static final ObjectMap<Team, Message> powerShortageMessages = new ObjectMap<>();
+
+    /** 该队当前是否有保护器正处于保护（峰值锁定介入，nextTickPPower 高于显示阈值）。 */
+    static boolean teamHasActiveProtector(Team team) {
+        for (Building b : Groups.build) {
+            if (b instanceof PowerProtectorBuild ppb && ppb.team == team
+                    && ppb.power != null && ppb.power.graph != null
+                    && ppb.state.nextTickPPower > 0.05f) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 队伍共享时间池：可用保护时间 + 回充累积计时。 */
@@ -219,6 +240,11 @@ public class PowerProtector extends PowerGenerator {
         saveConfig = false;
         displayFlow = false;
         drawArrow = false;
+        // 配置走标准 configure 链路（联网时经 Call.tileConfig 广播到全端一致）：
+        // 启停 = Boolean 配置类（与逻辑 `enabled` 指令共用同一字段）；恢复电池占比 = Float 配置类（滑块提交）。
+        config(Boolean.class, (building, value) -> building.enabled = value);
+        config(Float.class, (building, value) ->
+            ((PowerProtectorBuild) building).state.restoreBatteryPercent = Mathf.clamp(value, 0f, 1f));
         // 不可被其他方块覆盖替换（放置时红色无效）
         replaceable = false;
         // 动态消耗：偿还时按 tickRPower（上一帧算好的偿还速率）消耗电网电力还债，否则为 0。
@@ -242,6 +268,7 @@ public class PowerProtector extends PowerGenerator {
         // 已存档数据，又能清掉上一局残留的池。
         Events.on(EventType.WorldLoadEvent.class, e -> {
             teamPools.clear();
+            powerShortageMessages.clear();
             for (Building b : Groups.build) {
                 if (b instanceof PowerProtectorBuild ppb && !teamPools.containsKey(ppb.team)) {
                     teamPools.put(ppb.team, new TeamPool(ppb.state.remainingProtectionTime, ppb.state.restoreTimer));
@@ -334,7 +361,6 @@ public class PowerProtector extends PowerGenerator {
         public float tickPPower = 0f;                     // 保护供电（由 Trigger.update 抢先提交后的当帧产出）
         public float nextTickPPower = 0f;                 // 缓冲：本帧 updateTile 算出的目标产出，供下一帧 Trigger 提交
         public float tickRPower = 0f;                     // 偿还消耗（自家）
-        public boolean announced = false;                 // 是否已弹过缺电警告（去重）
         public float peakGap = 0f;                        // 曾观测到的缺口峰值（每帧衰减，电网真自足后解除）
         public boolean latching = false;                  // 是否处于峰值锁定期（介入记忆，防止冷却撤产）
         public boolean restoring = false;                 // 恢复（偿还会话）滞回标志：一旦进入持续到欠款还清或电网真缺电
@@ -346,15 +372,15 @@ public class PowerProtector extends PowerGenerator {
     }
 
     public class PowerProtectorBuild extends GeneratorBuild {
-        /** 电力不足警报音（仅随提示横幅播放一次） */
-        private Sound warnSfx;
-
         @Override
         public void updateTile() {
             // 每帧把全局队伍时间池刷到本地副本
             TeamPool tp = pool(team);
             state.remainingProtectionTime = tp.remainingProtectionTime;
             state.restoreTimer = tp.restoreTimer;
+
+            // 全队「电力不足」持续型消息管理：多保护器同队共用一条，全队停止保护即撤下
+            manageTeamWarnMessage();
 
             if (power == null || power.graph == null) {
                 state.nextTickPPower = 0f;
@@ -553,14 +579,6 @@ public class PowerProtector extends PowerGenerator {
                 if (served > 0f) {
                     state.debt = Math.min(state.debt + served * lossMultiplier, Double.MAX_VALUE);
                 }
-                // 开始保护时向本队玩家弹出一次缺电警告
-                if (player != null && team == player.team() && !state.announced) {
-                    state.announced = true;
-                    showPowerShortageBanner();
-                }
-            } else {
-                // 保护结束，下次保护会话可再次警告
-                state.announced = false;
             }
 
             // —— 偿还（电池式「充电」）：仅恢复会话中、电网确实富余时用富余电力还债 ——
@@ -688,24 +706,62 @@ public class PowerProtector extends PowerGenerator {
             }
         }
 
-        /** 播放电力不足警报音（与提示横幅绑定；若该音效正在播放则取消本次，避免重叠） */
-        private void playWarnSfx() {
-            if (mindustry.Vars.headless) return;
-            if (warnSfx == null) {
-                for (String path : new String[]{"sounds/warn/power-protector.ogg", "assets/sounds/warn/power-protector.ogg"}) {
-                    Fi f = tree.get(path);
-                    if (f.exists()) {
-                        warnSfx = new Sound(f);
-                        break;
-                    }
+        /**
+         * 全队「电力不足」持续型消息管理：每台保护器每帧调用一次（多保护器并存时均执行，
+         * 幂等协作，不重复投递）。
+         * <ul>
+         *   <li>该队有保护器正在保护 且 尚无消息 → 投递一条持续型紧急消息：
+         *       红底（emergency 模板）、游戏内置电源图标、高优先级、同队可见；
+         *       内容中的可用保护时间经「{0}」占位符实时刷新（读全队时间池，不绑定某台实例）。</li>
+         *   <li>该队没有保护器在保护 → 断开已有消息握手，由系统下一帧扫描自动清除。</li>
+         * </ul>
+         * 消息随保护开始出现、随全队保护结束消失；被清除后地图重新触发保护会再次投递。
+         */
+        private void manageTeamWarnMessage() {
+            // 纯客户端不本地创建「电力不足」消息：服务器权威进程创建并广播，客户端面板只呈现服务器推送的镜像，
+            // 避免「本地模拟创建 + 服务器广播」造成同队重复消息。
+            if (!MessageSystem.isAuthoritative()) return;
+            boolean active = teamHasActiveProtector(team);
+            Message m = powerShortageMessages.get(team);
+            if (active) {
+                if (m != null && !m.handshake.isConnected()) {
+                    // 旧消息已失联（被上一局清空/系统清扫），丢弃并重新投递
+                    powerShortageMessages.remove(team);
+                    m = null;
                 }
+                if (m == null) {
+                    m = MessageSystem.emergency(
+                            Core.bundle.get("block.silicon-power-protector.announce.lowPower.title"),
+                            Core.bundle.get("block.silicon-power-protector.announce.lowPower.content"))
+                        .titleKey("block.silicon-power-protector.announce.lowPower.title")
+                        .contentKey("block.silicon-power-protector.announce.lowPower.content")
+                        .icon(Icon.power)
+                        .type(MessageType.PERSISTENT)
+                        .team(team)
+                        // 消息弹出时播放警示音效（面板在该消息到达时播放；以资源名指定，专用服务器等无音频进程也能跨进程传名）
+                        .sound("power-protector")
+                        // 可用保护时间实时刷新：直读全队时间池，避免绑定某台可能被拆除的保护器
+                        .var(() -> Strings.fixed(Math.max(0f, pool(team).remainingProtectionTime / 60f), 1))
+                        // 探活器：只要该队仍有保护器在保护，消息就保持占位
+                        .handshake(new Handshake(() -> teamHasActiveProtector(team)));
+                    powerShortageMessages.put(team, m);
+                    MessageSystem.instance.post(m);
+                }
+            } else if (m != null) {
+                m.handshake.disconnect();
+                powerShortageMessages.remove(team);
             }
-            if (warnSfx != null && warnSfx.countPlaying() <= 0) warnSfx.play();
         }
 
         @Override
         public float getPowerProduction() {
             return state.tickPPower;
+        }
+
+        /** 配置取回：启停状态（Boolean 配置类）。滑块（Float 配置类）不走本取回，仅启停按钮状态依赖。 */
+        @Override
+        public Object config() {
+            return enabled;
         }
 
         @Override
@@ -723,7 +779,7 @@ public class PowerProtector extends PowerGenerator {
         private Label statusLabel = null, remainingLabel = null, debtLabel = null, supplyLabel = null, restorePercentLabel = null;
         private TextButton stopButton = null;
         private Slider restorePercentSlider = null;
-        private Table bannerTable = null, breakBannerTable = null;
+        private Table breakBannerTable = null;
 
         /** 当前显示模式文案（与方块进度条共用） */
         public String modeText() {
@@ -805,7 +861,8 @@ public class PowerProtector extends PowerGenerator {
                 ).left().growX().get();
             }).colspan(2).growX().padBottom(8f).row();
 
-            // 启停按钮：与逻辑处理器 `enabled` 指令共用同一字段，行为一致
+            // 启停按钮：与逻辑处理器 `enabled` 指令共用同一字段，行为一致。
+            // 走标准 configure 链路：本端经 configured() 立即生效，联网时经 Call.tileConfig 广播到全端一致。
             stopButton = inner.button("", redToggle(), () -> {
                 configure(!enabled);
                 updateConfigUI();
@@ -874,40 +931,7 @@ public class PowerProtector extends PowerGenerator {
             }
         }
 
-        /** 电力不足提示横幅 */
-        private void showPowerShortageBanner() {
-            playWarnSfx();
-            if (bannerTable != null) return;
-            Table t = new Table(Styles.black3);
-            t.touchable = Touchable.disabled;
-            t.margin(8f);
-            Label label = t.add(Core.bundle.format("block.silicon-power-protector.announce.powerShortageTime", "999.0"))
-                    .style(Styles.outlineLabel).padLeft(14f).get();
-            label.setAlignment(Align.left);
-            label.update(() -> {
-                float remainingSec = Math.max(0f, state.remainingProtectionTime / 60f);
-                label.setText(Core.bundle.format("block.silicon-power-protector.announce.powerShortageTime",
-                        Strings.fixed(remainingSec, 1)));
-                label.setColor(Tmp.c1.set(Color.orange).lerp(Color.scarlet, Mathf.absin(Time.time, 2f, 1f)));
-            });
-            t.update(() -> {
-                t.pack();
-                t.setPosition(6f, Core.graphics.getHeight() * 0.6f, Align.topLeft);
-                // 直接以运行字段判断（与 Mode 解耦）：不再保护时立即移除横幅。
-                // 额外检查自身是否仍有效（isValid）：切换存档/拆除后该 building 已失效，
-                // state 不再刷新，若不加此判断横幅会因旧值残留而永不消失。
-                if (!isValid() || state.nextTickPPower <= 0.05f || mindustry.Vars.state.isMenu() || !ui.hudfrag.shown) {
-                    if (bannerTable == t) bannerTable = null;
-                    t.remove();
-                }
-            });
-            bannerTable = t;
-            t.pack();
-            t.act(0.1f);
-            ui.hudGroup.addChild(t);
-        }
-
-        /** 禁止拆除提示横幅：位于电力不足横幅上方，短暂显示后消失 */
+        /** 禁止拆除提示横幅：短暂显示后消失 */
         private void showCannotBreakBanner() {
             if (breakBannerTable != null) return;
             Table t = new Table(Styles.black3);
@@ -918,10 +942,7 @@ public class PowerProtector extends PowerGenerator {
             label.setAlignment(Align.left);
             t.update(() -> {
                 t.pack();
-                float y = bannerTable != null
-                        ? bannerTable.getY(Align.top) - t.getPrefHeight() - 4f
-                        : Core.graphics.getHeight() * 0.6f - 24f;
-                t.setPosition(6f, y, Align.topLeft);
+                t.setPosition(6f, Core.graphics.getHeight() * 0.6f - 24f, Align.topLeft);
                 if (mindustry.Vars.state.isMenu() || !ui.hudfrag.shown) {
                     if (breakBannerTable == t) breakBannerTable = null;
                     t.remove();

@@ -1,9 +1,11 @@
 name: Robin
 
 on:
-  # 直接激活：PR 打开/同步时自动审查（支持 fork PR，需 pull_request_target 以获取 secrets）
+  # robin action 本体明确拒绝 pull_request_target（见其 dist 硬 return 与日志 warning），
+  # 不能在 pull_request_target 上直接跑 review；必须经 bootstrap 用 GH_PAT 另发 /review 评论，
+  # 转由 issue_comment 链路携带 secrets 执行真实审查（该路径支持 fork PR）。
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
     types: [created]
 
@@ -16,9 +18,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ① 秘钥探测：LLM 三件套配置齐全才继续
+  # ① 引导：PR 打开/同步/重开/就绪时，用 GH_PAT 代发 /review 触发真实审查
+  # GITHUB_TOKEN 发的评论不会触发 issue_comment（GitHub 安全机制），必须 GH_PAT
+  bootstrap:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask robin to review
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event.action }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::GH_PAT 未配置，无法自动触发审查。请在 仓库 Settings → Secrets 配置 GH_PAT（repo 权限 PAT）后重跑，或手动评论 /robin。"
+            exit 0
+          fi
+          # 去重：已存在 bot 的 /review 则跳过，避免对同一 PR 刷屏
+          # synchronize 场景下若需每次推送都自动审，可去掉此检查或改为按 head_sha 区分
+          existing=$(gh api "repos/$REPO/issues/$NUMBER/comments" \
+            --jq '[.[]|select(.user.login=="github-actions[bot]" and (.body|startswith("/review")))]|length')
+          if [ "$existing" -eq 0 ]; then
+            gh pr comment "$NUMBER" --repo "$REPO" --body "/review"
+            echo "Posted /review via GH_PAT (event=$EVENT)"
+          else
+            echo "Bootstrap /review already present ($existing), skip auto (use /robin to force)"
+          fi
+
+  # ② 秘钥探测：LLM 三件套齐全才继续（该检查仅对 issue_comment 生效，bootstrap 不依赖 LLM）
   config-check:
-    if: github.event_name == 'pull_request_target' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request
     runs-on: ubuntu-latest
     outputs:
       configured: ${{ steps.check.outputs.configured }}
@@ -32,20 +62,17 @@ jobs:
           if [ -n "$_BASE" ] && [ -n "$_KEY" ] && [ -n "$_MODEL" ]; then echo "configured=true" >> "$GITHUB_OUTPUT";
           else echo "configured=false" >> "$GITHUB_OUTPUT"; echo "::warning::LLM 三件套未齐全（需 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL），跳过审查"; fi
 
-  # ② 真实审查：PR 事件直接触发；评论事件需 /review 或 /robin 且鉴权
+  # ③ 真实审查：仅在 issue_comment 触发，支持维护者与 bot；triage 权限放行协作翻译员
   review:
     needs: config-check
     if: >-
       needs.config-check.outputs.configured == 'true' &&
       (
-        github.event_name == 'pull_request_target' ||
-        (
-          startsWith(github.event.comment.body, '/review') ||
-          startsWith(github.event.comment.body, '/robin')
-        ) && (
-          github.event.comment.user.login == 'github-actions[bot]' ||
-          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
-        )
+        startsWith(github.event.comment.body, '/review') ||
+        startsWith(github.event.comment.body, '/robin')
+      ) && (
+        github.event.comment.user.login == 'github-actions[bot]' ||
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
       )
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -59,3 +86,4 @@ jobs:
           model: ${{ secrets.LLM_MODEL }}
           config-file: .github/robin.yml
           review-instructions-file: .github/code-reviewer.md
+          min-command-permission: triage

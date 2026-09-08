@@ -30,6 +30,9 @@ public class SignalDetector extends Block {
         saveConfig = false;
         group = BlockGroup.none;
         enableDrawStatus = false;
+        // 占位配置类：BlockConfigFragment.showConfig 经 configTapped()（默认=配置类表非空）放行，
+        // 无 config 类的纯面板方块点击不会弹 UI；布尔配置为无操作占位（saveConfig=false 不落存档）
+        config(Boolean.class, (building, value) -> {});
     }
 
     public class SignalDetectorBuild extends Building {

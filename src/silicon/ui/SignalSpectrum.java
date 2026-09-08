@@ -118,8 +118,9 @@ public class SignalSpectrum {
                     if (jb.jamChannel == SignalJammer.ALL || jb.jamChannel == ch) jam++;
                 }
                 occLabels[ch].label.setText(Core.bundle.format("block.silicon-signal.spectrum.src", src, jam));
+                // I 标签必须预格式化：bundle.format 吃原始 float 会渲染全精度小数，溢出单元格重叠
                 itfLabels[ch].label.setText(Core.bundle.format("block.silicon-signal.spectrum.i",
-                        (intBuf[ch] - SignalChannel.NOISE_FLOOR)));
+                        fmtEff(intBuf[ch] - SignalChannel.NOISE_FLOOR)));
                 rowTables[ch].background(ch == cur ? selBg : null);
             }
         });

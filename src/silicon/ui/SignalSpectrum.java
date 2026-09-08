@@ -43,8 +43,8 @@ public class SignalSpectrum {
     /** 当前信道号的颜色（高亮当前行） */
     private static final Color curColor = Pal.accent;
 
-    /** 固定列宽（按最宽文本预留，见类注释"布局防重叠"） */
-    private static final float W_CHIP = 10f, W_CH = 28f, W_OCC = 74f, W_ITF = 52f, W_BAR_MIN = 78f;
+    /** 固定列宽（按最宽文本预留；信道列 34px 容纳"信道"二字，防表头渗透邻列） */
+    private static final float W_CHIP = 10f, W_CH = 34f, W_OCC = 76f, W_ITF = 56f, W_BAR_MIN = 78f;
     /** 频谱区总最小宽（各列 + 间距），宿主 minWidth 用 */
     private static final float SECTION_MIN = W_CHIP + 4f + W_CH + W_OCC + W_ITF + W_BAR_MIN + 12f;
 
@@ -81,12 +81,12 @@ public class SignalSpectrum {
         spec.add(Core.bundle.get("block.silicon-signal.spectrum.title"))
                 .colspan(5).center().color(Pal.accent).padTop(6f).padBottom(1f);
         spec.row();
-        // 表头（与数据行同列宽）
+        // 表头（与数据行同列宽；列头文字居中）
         spec.add().size(W_CHIP, W_CHIP).padRight(4f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.ch")).width(W_CH).left().color(Color.gray).pad(1f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.occ")).width(W_OCC).left().color(Color.gray).pad(1f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.itf")).width(W_ITF).left().color(Color.gray).pad(1f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.str")).minWidth(W_BAR_MIN).growX().left().color(Color.gray).pad(1f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.ch")).width(W_CH).center().color(Color.gray).pad(1f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.occ")).width(W_OCC).center().color(Color.gray).pad(1f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.itf")).width(W_ITF).center().color(Color.gray).pad(1f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.str")).minWidth(W_BAR_MIN).growX().center().color(Color.gray).pad(1f);
         spec.row();
 
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
@@ -116,7 +116,9 @@ public class SignalSpectrum {
             spec.row();
         }
 
-        parent.add(spec).growX().minWidth(SECTION_MIN).colspan(4).pad(1f);
+        // colspan 动态取宿主当前列数（信号源面板=5 个信道按钮列；不同宿主列数不同，
+        // 固定 colspan 会只跨部分列、把宿主前几列撑宽导致按钮/标题错位）
+        parent.add(spec).growX().minWidth(SECTION_MIN).colspan(parent.getColumns()).pad(1f);
         parent.row();
 
         parent.update(() -> {

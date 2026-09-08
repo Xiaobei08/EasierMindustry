@@ -245,7 +245,8 @@ public class SignalSource extends Block {
                     int ch = i;
                     btn.clicked(() -> configure(ch));
                     group.add(btn);
-                    t.add(btn).size(44f, 40f).pad(1f);
+                    // 左对齐：按钮 1 贴紧面板左缘（列宽被频谱段撑宽时默认居中会产生空隙）
+                    t.add(btn).size(44f, 40f).pad(1f).left();
                 }
                 t.row();
                 // 信号频谱：本点 5 信道占用/干扰/可用强度（SINR 制的信道选择对策信息）

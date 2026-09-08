@@ -8,21 +8,26 @@ import mindustry.gen.Building;
 import mindustry.gen.Tex;
 import mindustry.graphics.Pal;
 import mindustry.ui.Bar;
+import silicon.util.SatelliteManager;
 import silicon.world.blocks.signal.SignalChannel;
 import silicon.world.blocks.signal.SignalJammer;
 import silicon.world.blocks.signal.SignalRelay;
 import silicon.world.blocks.signal.SignalSource;
 
 /**
- * 信号频谱面板（信号源 / 信号中继器配置界面共享组件）：
- * 在方块所在点位对 5 条信道各渲染一行——信道色块 | 占用计数（全队源/中继 + 干扰器） |
- * 本点干扰功率 I（SINR 分母去掉底噪） | 该点可用有效强度条（0~15，SINR 折算后）。
+ * 信号频谱面板（信号源 / 信号中继器 / 信号检测器配置界面共享组件）：
+ * 在方块所在点位对 5 条信道各渲染一行——信道色块 | 占用计数（地面源/中继 + 卫星 + 干扰器） |
+ * 本点干扰功率 I（SINR 分母去掉底噪） | 该点可用有效强度条（SINR 折算后，含卫星层 RSS 合成）。
  * <p>
- * SINR 比值制的对策信息入口：玩家据此判断"哪条信道干净"，切换信道规避 CCI/干扰器。
- * 当前所在信道行高亮（源=自身信道；中继=绑定源的实际转发信道）。
+ * <b>卫星层</b>：绑定信道的在轨卫星（channel ≥ 1）按信道各自 SINR 折算（satelliteEffAt，底噪在
+ * 质量因子内）后对数叠加（stackEff），再与地面强度 RSS 功率合成 total = √(g² + s²)——与 H 覆盖
+ * 层模型一致；未绑定卫星（channel < 1）不进信道视图（仅覆盖显示，见覆盖层）。
  * <p>
- * 性能：15 tick 节流刷新（配置面板常开时每秒 4 次全量重算 effectiveAll，与 H 覆盖同一次遍历成本）；
- * 标签 setText / Bar 值每节流周期更新，无逐帧字符串分配（Bar 的值标签由引擎逐帧渲染）。
+ * <b>布局防重叠（实测踩坑）</b>：BlockConfigFragment 在面板打开时按空标签 pack 一次定宽，节流刷新
+ * 填入文本后外层不会重新加宽——列宽必须固定且按最宽文本预留，标签一律左对齐（居中文本溢出会向
+ * 两侧渗透）；整段频谱放进单个嵌套表并对宿主声明 minWidth，杜绝宿主列宽挤压。
+ * <p>
+ * 性能：15 tick 节流刷新；标签 setText / Bar 值每节流周期更新，无逐帧字符串分配。
  * 静态缓冲复用（同一时刻只有一个配置面板打开；面板关闭后 update 链随场景移除自动停止）。
  */
 public class SignalSpectrum {
@@ -35,17 +40,25 @@ public class SignalSpectrum {
             Color.valueOf("8a4ae0"), // 5 紫
     };
 
-    /** 当前信道行的高亮底（白 ui 低透明度染色） */
-    private static final arc.scene.style.Drawable selBg =
-            ((arc.scene.style.TextureRegionDrawable) Tex.whiteui).tint(new Color(1f, 1f, 1f, 0.08f));
+    /** 当前信道号的颜色（高亮当前行） */
+    private static final Color curColor = Pal.accent;
+
+    /** 固定列宽（按最宽文本预留，见类注释"布局防重叠"） */
+    private static final float W_CHIP = 10f, W_CH = 28f, W_OCC = 74f, W_ITF = 52f, W_BAR_MIN = 78f;
+    /** 频谱区总最小宽（各列 + 间距），宿主 minWidth 用 */
+    private static final float SECTION_MIN = W_CHIP + 4f + W_CH + W_OCC + W_ITF + W_BAR_MIN + 12f;
 
     private static final float[] effBuf = new float[SignalJammer.CHANNEL_MAX + 1];
     private static final float[] intBuf = new float[SignalJammer.CHANNEL_MAX + 1];
     @SuppressWarnings("unchecked")
     private static final Building[] srcBuf = new Building[SignalJammer.CHANNEL_MAX + 1];
+    /** 卫星层按信道聚合缓冲（sum/max 计 stackEff，cnt 计占用） */
+    private static final float[] satSum = new float[SignalJammer.CHANNEL_MAX + 1];
+    private static final float[] satMax = new float[SignalJammer.CHANNEL_MAX + 1];
+    private static final int[] satCnt = new int[SignalJammer.CHANNEL_MAX + 1];
     private static final LabelRef[] occLabels = new LabelRef[SignalJammer.CHANNEL_MAX + 1];
     private static final LabelRef[] itfLabels = new LabelRef[SignalJammer.CHANNEL_MAX + 1];
-    private static final Table[] rowTables = new Table[SignalJammer.CHANNEL_MAX + 1];
+    private static final LabelRef[] chLabels = new LabelRef[SignalJammer.CHANNEL_MAX + 1];
 
     /** 节流相位（面板打开期间递增；15 tick 一轮） */
     private static int tick;
@@ -58,52 +71,53 @@ public class SignalSpectrum {
      *
      * @param parent         配置面板根表（grayPanel 内容表）
      * @param at             频谱取样点所在建筑（取其坐标与队伍）
-     * @param currentChannel 当前信道提供器（源=自身信道；中继=绑定源转发信道），行高亮用
+     * @param currentChannel 当前信道提供器（源=自身信道；中继=绑定源转发信道），当前行高亮用
      */
     public static void buildSection(Table parent, Building at, arc.func.Intp currentChannel) {
-        // 标题 + 列头
-        parent.add(Core.bundle.get("block.silicon-signal.spectrum.title"))
-                .colspan(4).center().color(Pal.accent).padTop(6f).padBottom(1f);
-        parent.row();
-        // 表头必须与数据行同构（嵌套 Table + 同列宽），直接平铺在 parent 上列宽不一致，
-        // 表头会与数据行错位重叠（实测踩坑）
-        Table head = new Table();
-        head.add().size(10f, 10f).padRight(4f);
-        head.add(Core.bundle.get("block.silicon-signal.spectrum.ch")).width(12f).center().color(Color.gray).pad(1f);
-        head.add(Core.bundle.get("block.silicon-signal.spectrum.occ")).minWidth(58f).center().color(Color.gray).pad(1f);
-        head.add(Core.bundle.get("block.silicon-signal.spectrum.itf")).minWidth(46f).center().color(Color.gray).pad(1f);
-        head.add(Core.bundle.get("block.silicon-signal.spectrum.str")).minWidth(78f).left().color(Color.gray).pad(1f);
-        parent.add(head).growX().colspan(4).pad(1f);
-        parent.row();
+        // 整段频谱包进单个嵌套表：对宿主声明 minWidth 防挤压；内部 5 列扁平网格，
+        // 表头与数据行共享同一列结构 → 对齐由结构保证
+        Table spec = new Table();
+
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.title"))
+                .colspan(5).center().color(Pal.accent).padTop(6f).padBottom(1f);
+        spec.row();
+        // 表头（与数据行同列宽）
+        spec.add().size(W_CHIP, W_CHIP).padRight(4f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.ch")).width(W_CH).left().color(Color.gray).pad(1f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.occ")).width(W_OCC).left().color(Color.gray).pad(1f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.itf")).width(W_ITF).left().color(Color.gray).pad(1f);
+        spec.add(Core.bundle.get("block.silicon-signal.spectrum.str")).minWidth(W_BAR_MIN).growX().left().color(Color.gray).pad(1f);
+        spec.row();
 
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
             // 色板按 0 基索引（CH_COLORS 长 5），信道号 1 基——处处减一，勿直接用信道号索引
             // lambda 捕获要求实际最终变量：c（0基色板）与 ci（信道副本）均为每轮新建
             final int c = ch - 1;
             final int ci = ch;
-            Table row = new Table();
-            // 信道色块 + 号
-            row.add(new Image(Tex.whiteui)).color(CH_COLORS[c]).size(10f, 10f).padRight(4f);
-            row.add(String.valueOf(ch)).width(12f).center();
+            // 信道色块 + 号（当前信道行：号变高亮色）
+            spec.add(new Image(Tex.whiteui)).color(CH_COLORS[c]).size(W_CHIP, W_CHIP).padRight(4f);
+            LabelRef chL = new LabelRef();
+            chL.label = spec.add(String.valueOf(ci)).width(W_CH).left().color(Color.lightGray).pad(1f).get();
+            chLabels[ch] = chL;
             // 占用计数（节流刷新）
             LabelRef occ = new LabelRef();
-            occ.label = row.add("").center().color(Color.lightGray).minWidth(58f).get();
+            occ.label = spec.add("").left().color(Color.lightGray).width(W_OCC).pad(1f).get();
             occLabels[ch] = occ;
             // 本点干扰功率 I
             LabelRef itf = new LabelRef();
-            itf.label = row.add("").center().color(Color.lightGray).minWidth(46f).get();
+            itf.label = spec.add("").left().color(Color.lightGray).width(W_ITF).pad(1f).get();
             itfLabels[ch] = itf;
             // 有效强度条（Prov<CharSequence> 构造器：值标签逐帧渲染，无逐帧分配）
-            row.add(new Bar(
+            spec.add(new Bar(
                     () -> fmtEff(effBuf[ci]),
                     () -> CH_COLORS[c],
                     () -> effBuf[ci] / 15f
-            )).growX().minWidth(78f).height(18f);
-
-            parent.add(row).growX().colspan(4).pad(1f);
-            parent.row();
-            rowTables[ch] = row;
+            )).growX().minWidth(W_BAR_MIN).height(18f).pad(1f);
+            spec.row();
         }
+
+        parent.add(spec).growX().minWidth(SECTION_MIN).colspan(4).pad(1f);
+        parent.row();
 
         parent.update(() -> {
             tick = (tick + 1) % 15;
@@ -111,6 +125,23 @@ public class SignalSpectrum {
             // 建筑可能在面板打开期间被摧毁——失效后立即停止采样（面板由 BlockConfigFragment 隐藏）
             if (at == null || !at.isValid()) return;
             SignalChannel.effectiveAll(at.team, at.x, at.y, effBuf, srcBuf, intBuf);
+            // 卫星层按信道聚合：绑定信道的卫星各自 SINR 折算后对数叠加，再与地面 RSS 功率合成
+            for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
+                satSum[ch] = 0f;
+                satMax[ch] = 0f;
+                satCnt[ch] = 0;
+            }
+            for (SatelliteManager.SatelliteRecord r : SatelliteManager.satellites(at.team)) {
+                // 上行门控与覆盖层一致：编码卫星在其地面源全部消失后停止广播
+                if (r.code != null && !SignalChannel.hasLiveSource(at.team, r.code)) continue;
+                int rc = r.channel;
+                if (rc < 1 || rc > SignalJammer.CHANNEL_MAX) continue; // 未绑定卫星不进信道视图
+                float e = SatelliteManager.satelliteEffAt(r, at.x, at.y);
+                if (e <= 0f) continue;
+                satSum[rc] += e;
+                if (e > satMax[rc]) satMax[rc] = e;
+                satCnt[rc]++;
+            }
             int cur = currentChannel.get();
             for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
                 int src = 0, jam = 0;
@@ -125,11 +156,19 @@ public class SignalSpectrum {
                     if (!jb.enabled) continue;
                     if (jb.jamChannel == SignalJammer.ALL || jb.jamChannel == ch) jam++;
                 }
+                // 卫星计入占用：与地面源一样占用信道带宽
+                src += satCnt[ch];
+                // RSS 功率合成：total = √(g² + s²)
+                float s = Math.max(0f, SatelliteManager.stackEff(satSum[ch], satMax[ch]));
+                if (s > 0f) {
+                    effBuf[ch] = (float) Math.sqrt((double) effBuf[ch] * effBuf[ch] + (double) s * s);
+                }
                 occLabels[ch].label.setText(Core.bundle.format("block.silicon-signal.spectrum.src", src, jam));
-                // I 标签必须预格式化：bundle.format 吃原始 float 会渲染全精度小数，溢出单元格重叠
+                // I 标签必须预格式化：bundle.format 吃原始 float 会渲染全精度小数
                 itfLabels[ch].label.setText(Core.bundle.format("block.silicon-signal.spectrum.i",
                         fmtEff(intBuf[ch] - SignalChannel.NOISE_FLOOR)));
-                rowTables[ch].background(ch == cur ? selBg : null);
+                // 当前行高亮：信道号变色（行底色方案受嵌套布局挤压影响，弃用）
+                chLabels[ch].label.setColor(ch == cur ? curColor : Color.lightGray);
             }
         });
     }

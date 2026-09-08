@@ -65,10 +65,15 @@ public class SignalSpectrum {
         parent.add(Core.bundle.get("block.silicon-signal.spectrum.title"))
                 .colspan(4).center().color(Pal.accent).padTop(6f).padBottom(1f);
         parent.row();
-        parent.add(Core.bundle.get("block.silicon-signal.spectrum.ch")).center().color(Color.gray).pad(1f);
-        parent.add(Core.bundle.get("block.silicon-signal.spectrum.occ")).center().color(Color.gray).pad(1f);
-        parent.add(Core.bundle.get("block.silicon-signal.spectrum.itf")).center().color(Color.gray).pad(1f);
-        parent.add(Core.bundle.get("block.silicon-signal.spectrum.str")).left().color(Color.gray).pad(1f);
+        // 表头必须与数据行同构（嵌套 Table + 同列宽），直接平铺在 parent 上列宽不一致，
+        // 表头会与数据行错位重叠（实测踩坑）
+        Table head = new Table();
+        head.add().size(10f, 10f).padRight(4f);
+        head.add(Core.bundle.get("block.silicon-signal.spectrum.ch")).width(12f).center().color(Color.gray).pad(1f);
+        head.add(Core.bundle.get("block.silicon-signal.spectrum.occ")).minWidth(58f).center().color(Color.gray).pad(1f);
+        head.add(Core.bundle.get("block.silicon-signal.spectrum.itf")).minWidth(46f).center().color(Color.gray).pad(1f);
+        head.add(Core.bundle.get("block.silicon-signal.spectrum.str")).minWidth(78f).left().color(Color.gray).pad(1f);
+        parent.add(head).growX().colspan(4).pad(1f);
         parent.row();
 
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {

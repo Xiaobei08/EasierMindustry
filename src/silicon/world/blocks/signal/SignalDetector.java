@@ -26,13 +26,14 @@ public class SignalDetector extends Block {
         super(name);
         update = false;
         solid = true;
+        // 关键：Block.hasBuilding() = destructible || update——两者皆 false 时 Tile 不创建
+        // Building 实体，方块变成"雕像"：悬停无信息面板、点击无反应（实测踩坑）。
+        // configTapped() 默认 true，纯面板方块不需要占位配置类。
+        destructible = true;
         configurable = true;
         saveConfig = false;
         group = BlockGroup.none;
         enableDrawStatus = false;
-        // 占位配置类：BlockConfigFragment.showConfig 经 configTapped()（默认=配置类表非空）放行，
-        // 无 config 类的纯面板方块点击不会弹 UI；布尔配置为无操作占位（saveConfig=false 不落存档）
-        config(Boolean.class, (building, value) -> {});
     }
 
     public class SignalDetectorBuild extends Building {

@@ -88,19 +88,19 @@ public class SignalSpectrum {
         Label hCh = new Label(Core.bundle.get("block.silicon-signal.spectrum.ch"));
         hCh.setAlignment(arc.util.Align.center);
         hCh.setColor(Color.gray);
-        spec.add(hCh).width(W_CH).center().pad(1f);
+        spec.add(hCh).width(W_CH).center().padTop(2f).padBottom(2f);
         Label hOcc = new Label(Core.bundle.get("block.silicon-signal.spectrum.occ"));
         hOcc.setAlignment(arc.util.Align.center);
         hOcc.setColor(Color.gray);
-        spec.add(hOcc).width(W_OCC).center().pad(1f);
+        spec.add(hOcc).width(W_OCC).center().padTop(2f).padBottom(2f);
         Label hItf = new Label(Core.bundle.get("block.silicon-signal.spectrum.itf"));
         hItf.setAlignment(arc.util.Align.center);
         hItf.setColor(Color.gray);
-        spec.add(hItf).width(W_ITF).center().pad(1f);
+        spec.add(hItf).width(W_ITF).center().padTop(2f).padBottom(2f);
         Label hStr = new Label(Core.bundle.get("block.silicon-signal.spectrum.str"));
         hStr.setAlignment(arc.util.Align.center);
         hStr.setColor(Color.gray);
-        spec.add(hStr).minWidth(W_BAR_MIN).growX().center().pad(1f);
+        spec.add(hStr).minWidth(W_BAR_MIN).growX().center().padTop(2f).padBottom(2f);
         spec.row();
 
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {
@@ -112,19 +112,19 @@ public class SignalSpectrum {
             // 统一走 Label 内部 setAlignment 居中，与列头同机制）
             spec.add(new Image(Tex.whiteui)).color(CH_COLORS[c]).size(W_CHIP, W_CHIP).padRight(4f);
             LabelRef chL = new LabelRef();
-            chL.label = spec.add(String.valueOf(ci)).width(W_CH).center().pad(1f).get();
+            chL.label = spec.add(String.valueOf(ci)).width(W_CH).center().padTop(2f).padBottom(2f).get();
             chL.label.setAlignment(arc.util.Align.center);
             chL.label.setColor(Color.lightGray);
             chLabels[ch] = chL;
-            // 占用计数（节流刷新；列内居中）
+            // 占用计数（节流刷新；列内居中；去除水平 pad 防列间缝隙显线）
             LabelRef occ = new LabelRef();
-            occ.label = spec.add("").width(W_OCC).center().pad(1f).get();
+            occ.label = spec.add("").width(W_OCC).center().padTop(2f).padBottom(2f).get();
             occ.label.setAlignment(arc.util.Align.center);
             occ.label.setColor(Color.lightGray);
             occLabels[ch] = occ;
             // 本点干扰功率 I（列内居中：截图实测左对齐与居中列头错位）
             LabelRef itf = new LabelRef();
-            itf.label = spec.add("").width(W_ITF).center().pad(1f).get();
+            itf.label = spec.add("").width(W_ITF).center().padTop(2f).padBottom(2f).get();
             itf.label.setAlignment(arc.util.Align.center);
             itf.label.setColor(Color.lightGray);
             itfLabels[ch] = itf;

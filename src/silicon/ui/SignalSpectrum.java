@@ -86,19 +86,19 @@ public class SignalSpectrum {
         // 居中双重保障（仅靠 Cell.center() 实测未生效，见用户反馈）
         spec.add().size(W_CHIP, W_CHIP).padRight(4f);
         Label hCh = new Label(Core.bundle.get("block.silicon-signal.spectrum.ch"));
-        hCh.setAlignment(arc.math.Align.center);
+        hCh.setAlignment(arc.util.Align.center);
         hCh.setColor(Color.gray);
         spec.add(hCh).width(W_CH).center().pad(1f);
         Label hOcc = new Label(Core.bundle.get("block.silicon-signal.spectrum.occ"));
-        hOcc.setAlignment(arc.math.Align.center);
+        hOcc.setAlignment(arc.util.Align.center);
         hOcc.setColor(Color.gray);
         spec.add(hOcc).width(W_OCC).center().pad(1f);
         Label hItf = new Label(Core.bundle.get("block.silicon-signal.spectrum.itf"));
-        hItf.setAlignment(arc.math.Align.center);
+        hItf.setAlignment(arc.util.Align.center);
         hItf.setColor(Color.gray);
         spec.add(hItf).width(W_ITF).center().pad(1f);
         Label hStr = new Label(Core.bundle.get("block.silicon-signal.spectrum.str"));
-        hStr.setAlignment(arc.math.Align.center);
+        hStr.setAlignment(arc.util.Align.center);
         hStr.setColor(Color.gray);
         spec.add(hStr).minWidth(W_BAR_MIN).growX().center().pad(1f);
         spec.row();

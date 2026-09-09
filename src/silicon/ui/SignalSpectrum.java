@@ -43,8 +43,8 @@ public class SignalSpectrum {
     /** 当前信道号的颜色（高亮当前行） */
     private static final Color curColor = Pal.accent;
 
-    /** 固定列宽（按最宽文本预留；信道列 34px 容纳"信道"二字，防表头渗透邻列） */
-    private static final float W_CHIP = 10f, W_CH = 34f, W_OCC = 76f, W_ITF = 56f, W_BAR_MIN = 78f;
+    /** 固定列宽（按最宽实测文本预留：中文字形约 20px/字——"12源/12扰"≈96px，"信道"≈36px，杜绝渗透） */
+    private static final float W_CHIP = 10f, W_CH = 36f, W_OCC = 96f, W_ITF = 60f, W_BAR_MIN = 78f;
     /** 频谱区总最小宽（各列 + 间距），宿主 minWidth 用 */
     private static final float SECTION_MIN = W_CHIP + 4f + W_CH + W_OCC + W_ITF + W_BAR_MIN + 12f;
 
@@ -94,10 +94,10 @@ public class SignalSpectrum {
             // lambda 捕获要求实际最终变量：c（0基色板）与 ci（信道副本）均为每轮新建
             final int c = ch - 1;
             final int ci = ch;
-            // 信道色块 + 号（当前信道行：号变高亮色）
+            // 信道色块 + 号（当前信道行：号变高亮色；号码在列内居中）
             spec.add(new Image(Tex.whiteui)).color(CH_COLORS[c]).size(W_CHIP, W_CHIP).padRight(4f);
             LabelRef chL = new LabelRef();
-            chL.label = spec.add(String.valueOf(ci)).width(W_CH).left().color(Color.lightGray).pad(1f).get();
+            chL.label = spec.add(String.valueOf(ci)).width(W_CH).center().color(Color.lightGray).pad(1f).get();
             chLabels[ch] = chL;
             // 占用计数（节流刷新）
             LabelRef occ = new LabelRef();

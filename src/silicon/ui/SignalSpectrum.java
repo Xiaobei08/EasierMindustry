@@ -9,6 +9,7 @@ import mindustry.gen.Building;
 import mindustry.gen.Tex;
 import mindustry.graphics.Pal;
 import mindustry.ui.Bar;
+import mindustry.ui.Styles;
 import silicon.util.SatelliteManager;
 import silicon.world.blocks.signal.SignalChannel;
 import silicon.world.blocks.signal.SignalJammer;
@@ -78,6 +79,8 @@ public class SignalSpectrum {
         // 整段频谱包进单个嵌套表：对宿主声明 minWidth 防挤压；内部 5 列扁平网格，
         // 表头与数据行共享同一列结构 → 对齐由结构保证
         Table spec = new Table();
+        // 整段频谱铺一层不透明底色(与面板同色):覆盖任意列边界处的底层像素,杜绝竖线透出(实测踩坑)
+        spec.setBackground(Styles.grayPanel);
 
         spec.add(Core.bundle.get("block.silicon-signal.spectrum.title"))
                 .colspan(5).center().color(Pal.accent).padTop(6f).padBottom(1f);

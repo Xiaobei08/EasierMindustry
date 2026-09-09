@@ -108,18 +108,25 @@ public class SignalSpectrum {
             // lambda 捕获要求实际最终变量：c（0基色板）与 ci（信道副本）均为每轮新建
             final int c = ch - 1;
             final int ci = ch;
-            // 信道色块 + 号（当前信道行：号变高亮色；号码在列内居中）
+            // 信道色块 + 号（当前信道行：号变高亮色；号码列内居中——cell.center 在该 arc 版不可靠，
+            // 统一走 Label 内部 setAlignment 居中，与列头同机制）
             spec.add(new Image(Tex.whiteui)).color(CH_COLORS[c]).size(W_CHIP, W_CHIP).padRight(4f);
             LabelRef chL = new LabelRef();
-            chL.label = spec.add(String.valueOf(ci)).width(W_CH).center().color(Color.lightGray).pad(1f).get();
+            chL.label = spec.add(String.valueOf(ci)).width(W_CH).center().pad(1f).get();
+            chL.label.setAlignment(arc.util.Align.center);
+            chL.label.setColor(Color.lightGray);
             chLabels[ch] = chL;
             // 占用计数（节流刷新；列内居中）
             LabelRef occ = new LabelRef();
-            occ.label = spec.add("").center().color(Color.lightGray).width(W_OCC).pad(1f).get();
+            occ.label = spec.add("").width(W_OCC).center().pad(1f).get();
+            occ.label.setAlignment(arc.util.Align.center);
+            occ.label.setColor(Color.lightGray);
             occLabels[ch] = occ;
-            // 本点干扰功率 I
+            // 本点干扰功率 I（列内居中：截图实测左对齐与居中列头错位）
             LabelRef itf = new LabelRef();
-            itf.label = spec.add("").left().color(Color.lightGray).width(W_ITF).pad(1f).get();
+            itf.label = spec.add("").width(W_ITF).center().pad(1f).get();
+            itf.label.setAlignment(arc.util.Align.center);
+            itf.label.setColor(Color.lightGray);
             itfLabels[ch] = itf;
             // 有效强度条（Prov<CharSequence> 构造器：值标签逐帧渲染，无逐帧分配）
             spec.add(new Bar(

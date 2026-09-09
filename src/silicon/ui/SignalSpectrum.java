@@ -99,9 +99,9 @@ public class SignalSpectrum {
             LabelRef chL = new LabelRef();
             chL.label = spec.add(String.valueOf(ci)).width(W_CH).center().color(Color.lightGray).pad(1f).get();
             chLabels[ch] = chL;
-            // 占用计数（节流刷新）
+            // 占用计数（节流刷新；列内居中）
             LabelRef occ = new LabelRef();
-            occ.label = spec.add("").left().color(Color.lightGray).width(W_OCC).pad(1f).get();
+            occ.label = spec.add("").center().color(Color.lightGray).width(W_OCC).pad(1f).get();
             occLabels[ch] = occ;
             // 本点干扰功率 I
             LabelRef itf = new LabelRef();

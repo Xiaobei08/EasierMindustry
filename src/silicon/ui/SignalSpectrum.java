@@ -3,6 +3,7 @@ package silicon.ui;
 import arc.Core;
 import arc.graphics.Color;
 import arc.scene.ui.Image;
+import arc.scene.ui.Label;
 import arc.scene.ui.layout.Table;
 import mindustry.gen.Building;
 import mindustry.gen.Tex;
@@ -81,12 +82,25 @@ public class SignalSpectrum {
         spec.add(Core.bundle.get("block.silicon-signal.spectrum.title"))
                 .colspan(5).center().color(Pal.accent).padTop(6f).padBottom(1f);
         spec.row();
-        // 表头（与数据行同列宽；列头文字居中）
+        // 表头（与数据行同列宽）：显式 Label 且 setAlignment(center)——单元格内居中 + 标签文本内
+        // 居中双重保障（仅靠 Cell.center() 实测未生效，见用户反馈）
         spec.add().size(W_CHIP, W_CHIP).padRight(4f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.ch")).width(W_CH).center().color(Color.gray).pad(1f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.occ")).width(W_OCC).center().color(Color.gray).pad(1f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.itf")).width(W_ITF).center().color(Color.gray).pad(1f);
-        spec.add(Core.bundle.get("block.silicon-signal.spectrum.str")).minWidth(W_BAR_MIN).growX().center().color(Color.gray).pad(1f);
+        Label hCh = new Label(Core.bundle.get("block.silicon-signal.spectrum.ch"));
+        hCh.setAlignment(arc.math.Align.center);
+        hCh.setColor(Color.gray);
+        spec.add(hCh).width(W_CH).center().pad(1f);
+        Label hOcc = new Label(Core.bundle.get("block.silicon-signal.spectrum.occ"));
+        hOcc.setAlignment(arc.math.Align.center);
+        hOcc.setColor(Color.gray);
+        spec.add(hOcc).width(W_OCC).center().pad(1f);
+        Label hItf = new Label(Core.bundle.get("block.silicon-signal.spectrum.itf"));
+        hItf.setAlignment(arc.math.Align.center);
+        hItf.setColor(Color.gray);
+        spec.add(hItf).width(W_ITF).center().pad(1f);
+        Label hStr = new Label(Core.bundle.get("block.silicon-signal.spectrum.str"));
+        hStr.setAlignment(arc.math.Align.center);
+        hStr.setColor(Color.gray);
+        spec.add(hStr).minWidth(W_BAR_MIN).growX().center().pad(1f);
         spec.row();
 
         for (int ch = 1; ch <= SignalJammer.CHANNEL_MAX; ch++) {

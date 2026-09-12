@@ -2,6 +2,10 @@ name: 'Voting'
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, closed]
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
 
 permissions:
   pull-requests: write

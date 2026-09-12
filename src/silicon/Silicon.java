@@ -22,8 +22,10 @@ import mindustry.mod.Mods;
 import mindustry.ui.Styles;
 import mindustry.ui.dialogs.BaseDialog;
 import mindustry.ui.dialogs.SettingsMenuDialog;
+import silicon.content.SatelliteUnits;
 import silicon.content.block.Blocks;
 import silicon.content.item.Items;
+import silicon.util.SatelliteManager;
 import silicon.util.MessageSync;
 import silicon.util.MessageSystem;
 import silicon.util.SiliconLog;
@@ -43,7 +45,9 @@ import static mindustry.Vars.*;
 
 public class Silicon extends Mod {
     public static Mods.LoadedMod MOD;
-    /** 常驻屏幕左边缘的消息面板实例（游戏中显示） */
+    /** 信号覆盖视角按键绑定（默认 H，官方 KeyBind 通道；覆盖绘制的切换/按住判定经此绑定，可在设置中重绑定） */
+    public static KeyBind keySignalView;
+    /** 常驻屏幕左边缘的消息面板实例（游戏中显示，PR #58 消息系统） */
     public static MessagePanel messagePanel;
     /** 消息面板开关按键绑定（默认 I，可在按键设置中重绑定） */
     public static KeyBind keyToggleMessagePanel;
@@ -68,6 +72,9 @@ public class Silicon extends Mod {
         }
     }
 
+    /** 卫星状态周期广播计时（约 30 tick / 0.5s） */
+    private static int satelliteBroadcastTick = 0;
+
     public Silicon() {
         Events.on(EventType.ClientLoadEvent.class, e -> {
             MOD = mods.getMod(Silicon.class);
@@ -79,21 +86,47 @@ public class Silicon extends Mod {
     public void loadContent() {
         Items.load();
         Blocks.load();
+        SatelliteUnits.load();
         SiliconLog.info("Loading contents.");
     }
 
     @Override
     public void init() {
-        // 注册消息面板开关按键（默认 I，可在按键设置中重绑定）
-        keyToggleMessagePanel = KeyBind.add("silicon_toggle_panel", KeyCode.i, "silicon");
-
-        // Reset hub network ID counter on world load to avoid ID collisions with saved hubs.
+        // 信号覆盖视角键（默认 H）+ 消息面板开关键（默认 I，PR #58）：走官方 KeyBind 系统，可在 设置→按键 重绑定；
+        // KeyBind 属客户端 UI 资源——dedicated 服务器没有输入子系统，必须 headless 守卫
+        if (!headless) {
+            keySignalView = KeyBind.add("silicon_signal_view", KeyCode.h, "silicon");
+            keyToggleMessagePanel = KeyBind.add("silicon_toggle_panel", KeyCode.i, "silicon");
+        }
         // 信号源/中继器按队缓存也在世界加载时失效重建（读档后建筑重新加入 Groups.build）。
-        // 电力保护器全局状态也需重置。
+        // 注:hub network id 计数器不再在此 reset——读档顺序是构造(占号)→read 用存档 id
+        // 覆盖→WorldLoadEvent,reset 反而制造撞号;现由 ItemTransferHubBuild.read() 调
+        // ItemTransferHubNetwork.updateCounterAfterLoad 按 max 推进。
+        // 卫星名册的清空挂在 ResetEvent（存档读入前/返回主菜单/新开局都会触发）——
+        // 读档流程是 ResetEvent 清空 → 控制台存档块（map 区域）读入重建名册 → WorldLoadEvent
+        // （此时单位实体尚未读入！）→ entities 区域读入单位 → app.post 延迟一拍做真正生效的对账。
+        Events.on(EventType.ResetEvent.class, e -> SatelliteManager.reset());
         Events.on(EventType.WorldLoadEvent.class, e -> {
-            ItemTransferHubNetwork.resetIdCounter();
             SignalSource.markDirty();
             SignalRelay.markDirty();
+            // 名册↔卫星实体对账：存档读入时 WorldLoadEvent 早于单位读入（readMap→endMapLoad→readEntities），
+            // 此刻 Groups.unit 还没有卫星，这里的调用只覆盖"实体先于事件"的路径（如直接进新图）
+            SatelliteManager.onWorldLoaded();
+            Core.app.post(SatelliteManager::onWorldLoaded); // 存档读档真正生效的对账：entities 区域已读完
+            SignalOverlay.reset(); // 清颜色缓存/色相分配/显示状态，防跨世界累积
+        });
+        // 卫星实体被击落（伤害仅可能来自 scripted unit.damage()）→ 名册除名并广播
+        Events.on(EventType.UnitDestroyEvent.class, e -> SatelliteManager.onUnitDestroyed(e.unit));
+        // 玩家中途加入时：主机向新玩家补发卫星状态 + 中继器激活状态
+        Events.on(EventType.PlayerJoin.class, e -> {
+            if (net.server()) {
+                SatelliteManager.broadcastState(e.player.team());
+                // 补发该队所有中继器当前 active（active 是自定义字段不随实体同步；新玩家加入时已稳定的
+                // 中继器不会再有变化事件，必须全量发一次，否则客机 H 键覆盖缺中继器级联段）
+                for (SignalRelay.SignalRelayBuild rb : SignalRelay.allRelays(e.player.team())) {
+                    Call.tileConfig(e.player, rb, rb.active);
+                }
+            }
             // PowerProtector 无全局静态状态，数据随存档保存，无需重置
         });
 
@@ -103,6 +136,132 @@ public class Silicon extends Mod {
         SignalOverlay.init();
         // 消息系统多人联网同步（nop 当不在服务器上时，仅注册事件处理器）
         MessageSync.init();
+
+        // 卫星发射请求（客机 → 服务器）：注册在 init 而非 ClientLoadEvent——dedicated 服务器（无客户端，
+        // 不触发 ClientLoadEvent）也必须能处理发射请求。主机权威执行，失败原因定向回发，成功走全图播报+状态广播
+        if (netServer != null) {
+            netServer.addPacketHandler("sat-launch", (p, data) -> {
+                try {
+                    String[] parts = data.split("\\|", -1);
+                    if (parts.length != 3) {
+                        // 所有失败路径都必须回包,否则请求方 UI 一直等待
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                        SiliconLog.info("sat-launch: malformed packet (fields) from " + p.name);
+                        return;
+                    }
+                    String[] xy = parts[0].split(",");
+                    if (xy.length != 2) {
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                        SiliconLog.info("sat-launch: malformed packet (coords) from " + p.name);
+                        return;
+                    }
+                    mindustry.world.Tile tile = world.tile(
+                            Integer.parseInt(xy[0].trim()), Integer.parseInt(xy[1].trim()));
+                    if (tile == null || !(tile.build instanceof silicon.world.blocks.satellite.SatelliteConsole.SatelliteConsoleBuild)) {
+                        // 控制台可能已被拆除/替换:给请求者明确反馈,而非无声死点击
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                        SiliconLog.info("sat-launch: invalid console tile from " + p.name);
+                        return;
+                    }
+                    silicon.world.blocks.satellite.SatelliteConsole.SatelliteConsoleBuild cb =
+                            (silicon.world.blocks.satellite.SatelliteConsole.SatelliteConsoleBuild) tile.build;
+                    if (cb.team != p.team()) {
+                        // 只能操作本队控制台;越权请求回笼统 fail(细节只进日志,不向可疑客户端透露原因)
+                        SiliconLog.info("sat-launch: team mismatch from " + p.name);
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                        return;
+                    }
+                    if (!cb.enabled) {
+                        Call.clientPacketReliable(p.con, "sat-result", "disabled");
+                        return;
+                    }
+                    int orbit;
+                    try {
+                        orbit = Integer.parseInt(parts[2].trim());
+                        if (orbit < silicon.world.blocks.satellite.SatelliteConsole.ORBIT_LEO
+                                || orbit > silicon.world.blocks.satellite.SatelliteConsole.ORBIT_SSO) {
+                            Call.clientPacketReliable(p.con, "sat-result", "fail");
+                            SiliconLog.info("sat-launch: orbit out of range from " + p.name);
+                            return;
+                        }
+                    } catch (NumberFormatException e) {
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                        SiliconLog.info("sat-launch: malformed packet (orbit) from " + p.name);
+                        return;
+                    }
+                    // 信号编码校验：4 位字母数字或空（空=沿用控制台默认），防畸形输入进入管理器
+                    String sig = parts[1];
+                    if (!sig.isEmpty() && !sig.matches("[A-Za-z0-9]{4}")) {
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                        SiliconLog.info("sat-launch: malformed signal code from " + p.name);
+                        return;
+                    }
+                    int result = SatelliteManager.launch(p.team(), sig.isEmpty() ? null : sig, orbit, cb.x, cb.y);
+                    if (result != SatelliteManager.LAUNCH_OK) {
+                        Call.clientPacketReliable(p.con, "sat-result", String.valueOf(result));
+                    }
+                } catch (Exception e) {
+                    SiliconLog.info("sat-launch: handler error: " + e);
+                    // 异常路径也必须回包;再兜一层防止回包本身抛异常
+                    try {
+                        Call.clientPacketReliable(p.con, "sat-result", "fail");
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+        }
+
+        // 多人暂停的服务端包处理器：必须注册在 init()——dedicated 服务器只触发 ServerLoadEvent、
+        // 不触发 ClientLoadEvent，原先注册在 ClientLoadEvent 里时这四个处理器在专属服务器上
+        // 永远不会生效（与 sat-launch 同因，故移到同一位置）
+        if (netServer != null) {
+            netServer.addPacketHandler("pause", (p, time) -> {
+                if (p.admin || p.name.equals(state.map.author())) {
+                    state.set(state.isPaused() ? GameState.State.playing : GameState.State.paused);
+                    Call.clientPacketReliable(p.con, "paused", time);
+                    SiliconLog.info(p.name + " pause");
+                    return;
+                }
+
+                if (Vars.pauseMode == 0) return;
+
+                if (Vars.pauseMode == 1) {
+                    state.set(state.isPaused() ? GameState.State.playing : GameState.State.paused);
+                    Call.clientPacketReliable(p.con, "paused", time);
+                    SiliconLog.info(p.name + " pause");
+                    return;
+                }
+
+                if (Vars.pauseMode == 2 && Vars.pauseWhitelist.contains(p.name)) {
+                    state.set(state.isPaused() ? GameState.State.playing : GameState.State.paused);
+                    Call.clientPacketReliable(p.con, "paused", time);
+                    SiliconLog.info(p.name + " pause");
+                }
+            });
+
+            netServer.addPacketHandler("pause-setmode", (p, data) -> {
+                if (!p.admin && !p.name.equals(state.map.author())) return;
+                try {
+                    Vars.pauseMode = Integer.parseInt(data.trim());
+                    if (Vars.pauseMode < 0 || Vars.pauseMode > 2) Vars.pauseMode = 0;
+                } catch (NumberFormatException ignored) {}
+            });
+
+            netServer.addPacketHandler("pause-grant", (p, data) -> {
+                if (!p.admin && !p.name.equals(state.map.author())) return;
+                String target = data.trim();
+                if (target.isEmpty()) return;
+                if (!Vars.pauseWhitelist.contains(target)) {
+                    Vars.pauseWhitelist.add(target);
+                }
+            });
+
+            netServer.addPacketHandler("pause-revoke", (p, data) -> {
+                if (!p.admin && !p.name.equals(state.map.author())) return;
+                String target = data.trim();
+                Vars.pauseWhitelist.remove(target);
+            });
+        }
 
         // 主界面自动检查 GitHub 更新（可在设置中关闭；有更新才显示横幅，初始隐藏）
         Events.on(EventType.ClientLoadEvent.class, e -> {
@@ -186,62 +345,49 @@ public class Silicon extends Mod {
             // 启动时从持久化设置恢复调试开关（checkPref 的变更回调只在用户手动切换时触发，
             // 不初始化的话每次启动都要重新关闭再打开才生效）
             silicon.world.blocks.distribution.ItemTransferHub.debugFlows = Core.settings.getBool("hubDebugLog", false);
-            if (netServer != null) {
-                netServer.addPacketHandler("pause", (p, time) -> {
-                    if (p.admin || p.name.equals(state.map.author())) {
-                        state.set(state.isPaused() ? GameState.State.playing : GameState.State.paused);
-                        Call.clientPacketReliable(p.con, "paused", time);
-                        SiliconLog.info(p.name + " pause");
-                        return;
+
+            // 卫星状态广播（服务器 → 客机）：应用主机权威状态（在轨数/归属信号/待发射数镜像）。
+            // 包处理器在网络线程回调——一切状态/UI 操作必须 post 回主线程
+            netClient.addPacketHandler("sat-state", s -> Core.app.post(() -> SatelliteManager.applyState(s)));
+            // 发射失败反馈（服务器 → 请求者）
+            netClient.addPacketHandler("sat-result", s -> Core.app.post(() -> {
+                if (s.equals("disabled")) {
+                    ui.showInfoToast(Core.bundle.get("block.silicon-satellite-console.disabled"), 3f);
+                    return;
+                }
+                if (s.equals("fail")) {
+                    // 服务端通用失败（包格式/越权/控制台失效/处理异常等，细节只留在服务器日志）
+                    ui.showInfoToast(Core.bundle.get("block.silicon-satellite-console.fail"), 3f);
+                    return;
+                }
+                try {
+                    int result = Integer.parseInt(s.trim());
+                    if (result == SatelliteManager.LAUNCH_OK) return;
+                    String key;
+                    switch (result) {
+                        case SatelliteManager.LAUNCH_NO_READY: key = "block.silicon-satellite-console.noready"; break;
+                        case SatelliteManager.LAUNCH_NO_FUEL: key = "block.silicon-satellite-console.nofuel"; break;
+                        case SatelliteManager.LAUNCH_NO_POWER: key = "block.silicon-satellite-console.nopower"; break;
+                        case SatelliteManager.LAUNCH_ORBIT_FORBIDDEN: key = "block.silicon-satellite-console.orbitForbidden"; break;
+                        case SatelliteManager.LAUNCH_NO_HUB: key = "block.silicon-satellite-console.nohub"; break;
+                        case SatelliteManager.LAUNCH_MULTI_HUB: key = "block.silicon-satellite-console.multihub"; break;
+                        case SatelliteManager.LAUNCH_MULTI_CONSOLE: key = "block.silicon-satellite-console.multiconsole"; break;
+                        case SatelliteManager.LAUNCH_TEST_SANDBOX: key = "block.silicon-satellite-console.sandboxOnly"; break;
+                        default: key = "block.silicon-satellite-console.fail"; break;
                     }
-
-                    if (Vars.pauseMode == 0) return;
-
-                    if (Vars.pauseMode == 1) {
-                        state.set(state.isPaused() ? GameState.State.playing : GameState.State.paused);
-                        Call.clientPacketReliable(p.con, "paused", time);
-                        SiliconLog.info(p.name + " pause");
-                        return;
-                    }
-
-                    if (Vars.pauseMode == 2 && Vars.pauseWhitelist.contains(p.name)) {
-                        state.set(state.isPaused() ? GameState.State.playing : GameState.State.paused);
-                        Call.clientPacketReliable(p.con, "paused", time);
-                        SiliconLog.info(p.name + " pause");
-                    }
-                });
-
-                netServer.addPacketHandler("pause-setmode", (p, data) -> {
-                    if (!p.admin && !p.name.equals(state.map.author())) return;
-                    try {
-                        Vars.pauseMode = Integer.parseInt(data.trim());
-                        if (Vars.pauseMode < 0 || Vars.pauseMode > 2) Vars.pauseMode = 0;
-                    } catch (NumberFormatException ignored) {}
-                });
-
-                netServer.addPacketHandler("pause-grant", (p, data) -> {
-                    if (!p.admin && !p.name.equals(state.map.author())) return;
-                    String target = data.trim();
-                    if (target.isEmpty()) return;
-                    if (!Vars.pauseWhitelist.contains(target)) {
-                        Vars.pauseWhitelist.add(target);
-                    }
-                });
-
-                netServer.addPacketHandler("pause-revoke", (p, data) -> {
-                    if (!p.admin && !p.name.equals(state.map.author())) return;
-                    String target = data.trim();
-                    Vars.pauseWhitelist.remove(target);
-                });
-            }
-
-            netClient.addPacketHandler("paused", (s) -> {
-                Vars.pause.complete = true;
-            });
+                    ui.showInfoToast(Core.bundle.get(key), 3f);
+                } catch (NumberFormatException ignored) {
+                }
+            }));
         });
 
         Events.run(EventType.Trigger.update, () -> {
             if (!state.isGame()) return;
+            // 卫星状态周期广播（控制台卫星名称/制造中字段保鲜，约 0.5s；服务器端）
+            if (net.server() && ++satelliteBroadcastTick >= 30) {
+                satelliteBroadcastTick = 0;
+                SatelliteManager.periodicBroadcastAll();
+            }
             if (net.client() && Core.settings.getBool("pauseRequest", true)) {
                 if (Core.input.keyTap(Binding.pause)) {
                     String time = String.valueOf((long) Time.time);

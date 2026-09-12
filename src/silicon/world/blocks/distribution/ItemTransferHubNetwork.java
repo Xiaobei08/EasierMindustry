@@ -24,8 +24,14 @@ public class ItemTransferHubNetwork {
 
     public boolean enableSurplusPush = true;
 
-    public static void resetIdCounter() {
-        total = 1;
+    /**
+     * 读档后推进计数器:存档中的 network.id 会覆盖构造时占用的自增号,
+     * 必须把静态计数器抬到已见最大 id 之上,否则读档后新建中枢会与
+     * 已加载中枢撞号(BFS/计费去重按 id 合并,跨枢搬运静默失效)。
+     * 各建筑 read() 时逐个调用,取 max 语义,与读档顺序无关。
+     */
+    public static void updateCounterAfterLoad(int loadedId) {
+        if (loadedId >= total) total = loadedId + 1;
     }
 
     public ItemTransferHubNetwork() {

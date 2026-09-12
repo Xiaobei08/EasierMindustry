@@ -16,8 +16,12 @@ import silicon.world.blocks.power.PowerProtector;
 import silicon.world.blocks.power.RollGenerator;
 import silicon.world.blocks.production.MineConverter;
 import silicon.world.blocks.sandbox.PowerSource;
+import silicon.world.blocks.satellite.SatelliteConsole;
+import silicon.world.blocks.satellite.SatelliteLauncher;
 import silicon.world.blocks.sandbox.MessageTest;
 import silicon.world.blocks.signal.DimensionAnchor;
+import silicon.world.blocks.signal.SignalDetector;
+import silicon.world.blocks.signal.SignalJammer;
 import silicon.world.blocks.signal.SignalRelay;
 import silicon.world.blocks.signal.SignalSource;
 
@@ -26,7 +30,8 @@ import static mindustry.type.ItemStack.with;
 public class Blocks {
     public static Block powerGeneratorPump, dualPurposeJunction, dualPurposeStorager,
             rollGenerator, powerProtector, powerSource, mineConverter, theSwitch, itemTransferHub,
-            dimensionAnchor, signalSource, universalJunction, signalRelay, messageTest;
+            dimensionAnchor, signalSource, universalJunction, signalRelay, signalJammer,
+            satelliteLauncher, satelliteConsole, messageTest, signalDetector;
 
     public static void load() {
         powerGeneratorPump = new GeneratorPump("power-generator-pump") {{
@@ -132,9 +137,38 @@ public class Blocks {
             size = 1;
             health = 100;
         }};
-        // “消息测试”调试方块：置于建造菜单最后，不占旧存档 ID；功能上用于手动投递消息面板测试消息
+        signalJammer = new SignalJammer("signal-jammer") {{
+            requirements(Category.effect, BuildVisibility.shown,
+                    ItemStack.with(Items.copper, 30, Items.lead, 20, Items.silicon, 25, Items.thorium, 10));
+            alwaysUnlocked = true;
+            size = 1;
+            health = 120;
+        }};
+        satelliteLauncher = new SatelliteLauncher("satellite-launcher") {{
+            requirements(Category.effect, BuildVisibility.shown,
+                    ItemStack.with(Items.copper, 300, Items.lead, 200, Items.silicon, 250, Items.thorium, 100, Items.titanium, 150));
+            alwaysUnlocked = true;
+            size = 3;
+            health = 1200;
+        }};
+        satelliteConsole = new SatelliteConsole("satellite-console") {{
+            requirements(Category.effect, BuildVisibility.shown,
+                    ItemStack.with(Items.copper, 120, Items.lead, 80, Items.silicon, 100, Items.thorium, 40));
+            alwaysUnlocked = true;
+            size = 3;
+            health = 400;
+        }};
+        // “消息测试”调试方块：上游 test（PR #58）既有注册位置（satelliteConsole 之后），不挪动以保上游存档 ID
         messageTest = new MessageTest("message-test") {{
             requirements(Category.effect, BuildVisibility.sandboxOnly, with());
+            alwaysUnlocked = true;
+            size = 1;
+            health = 60;
+        }};
+        // 信号检测器注册在最后：保证旧存档方块 ID 不被后续新增方块打乱（纯测量设备，无游戏逻辑）
+        signalDetector = new SignalDetector("signal-detector") {{
+            requirements(Category.effect, BuildVisibility.shown,
+                    ItemStack.with(Items.copper, 5, Items.silicon, 4));
             alwaysUnlocked = true;
             size = 1;
             health = 60;

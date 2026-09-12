@@ -82,6 +82,11 @@ public class ItemTransferHub extends Block {
         // 模组无法改写 Building 基类，改用建造完成事件实现等价行为：
         // 每个建筑建成时，范围内可连的中枢立即将其接入（增量式「每放一个就连一个」）
         Events.on(EventType.BlockBuildEndEvent.class, e -> {
+            // 联机守卫:此事件在服务端与每个客户端各触发一次(constructFinish 广播),
+            // 而 configure 走 tileConfig 双向通道(客户端本地预测+服务器权威执行)。
+            // 客户端再发起一次会让服务端的 toggle 语义把刚建的链接当作"取消"删掉——
+            // 服务端连接后经 tileConfig 转发,客户端自然收到结果,这里必须让路。
+            if (mindustry.Vars.net.client()) return;
             if (e.breaking || e.tile == null || e.tile.build == null) return;
             Building nb = e.tile.build;
             if (nb.team == Team.derelict) return;
@@ -441,6 +446,9 @@ public class ItemTransferHub extends Block {
                     if (!otherHub.hubLinks.contains(entity.pos())) {
                         otherHub.hubLinks.addUnique(entity.pos());
                     }
+                    // 对端拓扑必须同步重建:否则对端 data.hubs 缺本枢,
+                    // 从对端发起的 BFS 永远到不了本端(路由不对称)
+                    rebuildData(otherHub);
                 } else {
                     // 从其它中枢抢回属于自己模式的连接（复制粘贴时原网络可能抢先接入）
                     stealFromOtherHubs(entity, other);
@@ -1073,8 +1081,9 @@ public class ItemTransferHub extends Block {
             // 挂起链接补连：复制/粘贴时目标未建成（含建造中脚手架）的偏移，
             // 每 10 tick 重试一次（timers=4 中 id=3）——「每建完一个就连一个」；
             // 中枢目标无上限直接接上；普通目标满员保留挂起等空位；
-            // 超过 600 秒仍未出现的目标（无法放置/已取消）过期清理
-            // （大蓝图/慢速建造可能远超 3 分钟，过期太短会静默漏连）
+            // 超过 600 tick（约 10 秒）仍未出现的目标（无法放置/已取消）过期清理：
+            // 蓝图粘贴正常以秒级推进，等待超过 10 秒的目标基本都是无法放置/被取消的；
+            // 注意 Time.time 单位是 tick——600f 即 600 tick ≈ 10 秒，勿误当秒读
             if (!pendingLinks.isEmpty() && timer(3, 10)) {
                 float now = Time.time;
                 for (int i = pendingLinks.size - 1; i >= 0; i--) {
@@ -1101,7 +1110,10 @@ public class ItemTransferHub extends Block {
                     pendingLinks.remove(i);
                     pendingAt.removeIndex(i);
                     if (other == this || !other.isValid() || !linkValid(this, other)) continue;
-                    configure(other.pos());
+                    // 联机守卫:同 BlockBuildEndEvent——客户端本地发起 configure 会在服务端
+                    // 撞上 toggle 语义把链接撤销;客户端的挂起项由服务端连接经 tileConfig
+                    // 转发后走上面 hasAnyLink 分支自然消费
+                    if (!mindustry.Vars.net.client()) configure(other.pos());
                 }
             }
 
@@ -2089,6 +2101,10 @@ public class ItemTransferHub extends Block {
                 return;
             }
             network.id = read.i();
+            // 读档推进静态计数器:读档顺序是构造(占号)→read 覆盖→WorldLoadEvent,
+            // 若不推进,读档后新建中枢的 id 必与存档中已有中枢撞号——
+            // 该 id 用于 BFS/计费去重,撞号=两个枢纽被判为同一节点,跨枢搬运静默失效
+            ItemTransferHubNetwork.updateCounterAfterLoad(network.id);
             short linkCount = read.s();
             links.clear();
             for (int i = 0; i < linkCount; i++) {

@@ -33,18 +33,18 @@ public class UpdateChecker {
     public static final String API_URL = "https://api.github.com/repos/" + REPO + "/releases";
     public static final String DOWNLOAD_PREFIX = "https://github.com/" + REPO + "/releases/download/";
 
-    /** 是否已检查（启动后只检查一次） */
-    public static boolean checked = false;
+    /** 是否已检查（启动后只检查一次）。HTTP 线程写/UI 线程读，需 volatile 保证可见性 */
+    public static volatile boolean checked = false;
     /** 是否存在更新 */
-    public static boolean hasUpdate = false;
+    public static volatile boolean hasUpdate = false;
     /** 最新版本号 tag（如 va0.10.0.0，下载 URL 用） */
-    public static String latestVersion = "";
+    public static volatile String latestVersion = "";
     /** 最新 jar 下载地址 */
-    public static String downloadUrl = "";
-    /** 下载状态 */
-    public static boolean downloading = false;
-    public static boolean downloadDone = false;
-    public static boolean downloadFailed = false;
+    public static volatile String downloadUrl = "";
+    /** 下载状态（均在 HTTP 线程写、UI 线程读） */
+    public static volatile boolean downloading = false;
+    public static volatile boolean downloadDone = false;
+    public static volatile boolean downloadFailed = false;
     /** 上次检查时间（毫秒）：限制手动检查频率，避免触发 GitHub API 限流 */
     private static long lastCheckTime = 0;
 
@@ -177,80 +177,109 @@ public class UpdateChecker {
         return out;
     }
 
-    /** CDN 加速前缀（GitHub 下载加速，直连失败时按序尝试；格式为 <前缀> + 原始 GitHub URL） */
+    /** CDN 加速前缀（验证可用；下载按 CDN 优先、直连兜底：gh-proxy.com → ghfast.top → 直连） */
     public static final String[] CDN_PREFIXES = {
-        "https://ghproxy.net/",
         "https://gh-proxy.com/",
         "https://ghfast.top/",
-        "https://github.moeyy.xyz/",
     };
 
-    /** 下载新 jar 并安装到 mods 目录（替换旧 Silicon jar）；直连失败自动依次尝试 CDN 加速源 */
+    /** 下载新 jar 并安装到 mods 目录（替换旧 Silicon jar）；CDN 优先，直连兜底 */
     public static void downloadAndInstall(Runnable onDone, Runnable onError) {
         if (downloading || downloadUrl.isEmpty()) return;
         downloading = true;
         downloadFrom(0, onDone, onError);
     }
 
-    /** 依次尝试下载源：index=0 为直连，1..CDN_PREFIXES.length 依次使用 CDN 前缀 */
+    /** 依次尝试下载源：0..CDN_PREFIXES.length-1 为 CDN，最后一项为直连 */
     static void downloadFrom(int index, Runnable onDone, Runnable onError) {
         if (index > CDN_PREFIXES.length) {
-            // 所有源（直连 + 全部 CDN）均失败
+            // 全部 CDN + 直连均失败
             downloading = false;
             downloadFailed = true;
-            onError.run();
+            Core.app.post(onError);
             return;
         }
-        String url = index == 0 ? downloadUrl : CDN_PREFIXES[index - 1] + downloadUrl;
-        Http.get(url, res -> {
+        String url = index < CDN_PREFIXES.length ? CDN_PREFIXES[index] + downloadUrl : downloadUrl;
+        // 下载大 jar 需要长超时(默认仅 8 秒);失败回调挂 .error,成功回调走 .submit
+        Http.get(url).timeout(60000).error(err -> {
+            // 网络失败：继续尝试下一个源（CDN 加速）
+            SiliconLog.info("Download failed, trying next source: " + url + " (" + err + ")");
+            downloadFrom(index + 1, onDone, onError);
+        }).submit(res -> {
             byte[] data = res.getResult();
+            // Arc Http.getResult() 在下载体中途 IOException(超时/断连)时会吞异常并返回空数组:
+            // HTTP 状态错误走 error 回调,但"截断的 200 响应"会以成功身份进来。
+            // 必须先完整校验内容,再动 mods 目录——旧实现先删旧 jar、0 字节也判"成功",
+            // 结果是留下一个 0 字节 Silicon.jar 还提示"更新已安装"。
+            boolean valid = data != null && data.length > 4
+                    // jar 即 zip:魔数 "PK"
+                    && data[0] == 'P' && data[1] == 'K'
+                    // 与 Content-Length 比对(未知时为负数,跳过该项)
+                    && (res.getContentLength() <= 0 || res.getContentLength() == data.length);
+            if (!valid) {
+                SiliconLog.info("Update download invalid (truncated/empty response): " + url);
+                downloading = false;
+                downloadFailed = true;
+                Core.app.post(onError);
+                return;
+            }
             boolean ok = false;
             try {
-                // 只删除本模组的 jar：精确名 Silicon.jar，或 release 资产命名（Silicon-<版本>.jar），
+                var dir = Vars.modDirectory;
+                // ① 先落临时文件并校验字节数—— mods 目录此刻仍未被破坏
+                var tmp = dir.child("Silicon.jar.part");
+                tmp.writeBytes(data, false);
+                if (tmp.length() != data.length) throw new Exception("temp size mismatch");
+                // ② 只删除本模组的 jar：精确名 Silicon.jar，或 release 资产命名（Silicon-<版本>.jar），
                 // 避免误删其他文件名含 silicon 的模组
-                for (var f : Vars.modDirectory.list()) {
+                for (var f : dir.list()) {
                     String n = f.name().toLowerCase();
                     if (f.extEquals("jar") && (n.equals("silicon.jar") || n.startsWith("silicon-"))) {
                         f.delete();
                     }
                 }
-                // 写入新 jar，并校验落盘字节数
-                var target = Vars.modDirectory.child("Silicon.jar");
-                target.writeBytes(data);
+                // ③ 同目录 rename 落位（近乎原子;失败则回写直写并再校验）
+                var target = dir.child("Silicon.jar");
+                tmp.moveTo(target);
                 ok = target.length() == data.length;
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                SiliconLog.info("Update install failed: " + e);
             }
             if (ok) {
                 downloading = false;
                 downloadDone = true;
-                onDone.run();
+                // 回调最终会碰 scene2d(ui.showInfoToast),必须在渲染线程执行
+                Core.app.post(onDone);
             } else {
-                // 写入失败（磁盘问题）：重试其他源无意义，直接失败
+                // 落盘失败（磁盘问题）：重试其他源无意义，直接失败
                 downloading = false;
                 downloadFailed = true;
-                onError.run();
+                Core.app.post(onError);
             }
-        }, err -> {
-            // 网络失败：继续尝试下一个源（CDN 加速）
-            SiliconLog.info("Download failed, trying next source: " + url + " (" + err + ")");
-            downloadFrom(index + 1, onDone, onError);
         });
     }
 
     /** 更新弹窗是否已显示（本次会话只弹一次） */
     public static boolean dialogShown = false;
+    /** 弹窗是否被玩家手动关闭（手动关闭后不再自动重挂） */
+    public static boolean dialogDismissed = false;
     /** 自定义浮动窗口（更新弹窗，只维持一个） */
     public static Table popupTable;
     /** 信息弹窗（如"已是最新版本"，只维持一个，保持在最上层） */
     public static Table infoPopup;
 
     public static void setupBanner() {
-        // 状态变化（含进入主界面）时检查是否弹窗
+        // 状态变化（含进入主界面/进入游戏）时检查弹窗
         Events.on(EventType.StateChangeEvent.class, e -> refreshBanner());
     }
 
-    /** 有更新且在主界面时弹出更新提示（自定义浮动窗口，只弹一次） */
+    /** 有更新且在主界面时弹出更新提示（自定义浮动窗口，只弹一次）；进入游戏场景切换清除弹窗时自动重新挂载（未手动关闭） */
     public static void refreshBanner() {
+        // 弹窗被场景切换清除（parent 为空）但玩家未手动关闭 → 重新挂载到当前场景
+        if (hasUpdate && popupTable != null && popupTable.parent == null && !dialogDismissed) {
+            Core.scene.root.addChild(popupTable);
+            return;
+        }
         if (hasUpdate && Vars.state.isMenu() && !dialogShown) {
             showUpdateDialog();
         }
@@ -338,8 +367,9 @@ public class UpdateChecker {
         });
     }
 
-    /** 关闭弹窗 */
+    /** 关闭弹窗（手动关闭标记：不再自动重挂） */
     public static void hidePopup() {
+        dialogDismissed = true;
         if (popupTable != null) {
             popupTable.remove();
             popupTable = null;

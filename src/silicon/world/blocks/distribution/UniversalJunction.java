@@ -689,18 +689,21 @@ public class UniversalJunction extends Block {
             if (str == null) return;
             String[] parts = str.split(",");
             if (parts.length != 16 && parts.length != 20) return;
-
-            for (int i = 0; i < 4; i++) {
-                for (int j = 0; j < 4; j++) {
-                    weights[i][j] = Mathf.clamp(Integer.parseInt(parts[i * 4 + j].trim()), 0, 4);
+            try {
+                for (int i = 0; i < 4; i++) {
+                    for (int j = 0; j < 4; j++) {
+                        weights[i][j] = Mathf.clamp(Integer.parseInt(parts[i * 4 + j].trim()), 0, 4);
+                    }
                 }
-            }
-            if (parts.length == 20) {
-                for (int j = 0; j < 4; j++) {
-                    defaultRow[j] = Mathf.clamp(Integer.parseInt(parts[16 + j].trim()), 0, 4);
+                if (parts.length == 20) {
+                    for (int j = 0; j < 4; j++) {
+                        defaultRow[j] = Mathf.clamp(Integer.parseInt(parts[16 + j].trim()), 0, 4);
+                    }
+                } else {
+                    defaultRow = weights[0].clone(); // 旧格式：取第一行作全局默认
                 }
-            } else {
-                defaultRow = weights[0].clone(); // 旧格式：取第一行作全局默认
+            } catch (NumberFormatException e) {
+                return; // 网络通道畸形输入安全忽略（a3993c5 加固，保留）
             }
 
             // 配置变更后重置路由瞬态状态，避免沿用旧配置的降级/轮询状态

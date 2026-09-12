@@ -110,6 +110,8 @@ public class PowerProtector extends PowerGenerator {
     static class TeamPool {
         float remainingProtectionTime;
         float restoreTimer = 0f;
+        /** 上次池结算时间（Time.time，tick）。管理调用来自每台保护器，以此保证每帧每队只结算一次（不落存档） */
+        transient float lastManageTime = Float.NEGATIVE_INFINITY;
 
         TeamPool() {
             remainingProtectionTime = defaultProtectionTime;
@@ -250,6 +252,16 @@ public class PowerProtector extends PowerGenerator {
             PowerProtectorBuild ppb = (PowerProtectorBuild) entity;
             return ppb.state.tickRPower;
         }).optional(false, false);
+
+        // 联机权威通道:面板的阈值滑块与启停按钮必须走 configure(tileConfig)才能作用于服务器——
+        // 直改本地字段只存在于客户端,≤6 秒后即被服务器 writeBlockSnapshots 覆盖,
+        // 联机下操作等于幻觉。客户端调用 configure 会本地即时生效并转发服务器(Loc.both)。
+        config(Float.class, (PowerProtectorBuild b, Float v) -> {
+            if (v != null) b.state.restoreBatteryPercent = Mathf.clamp(v, 0f, 1f);
+        });
+        config(Boolean.class, (PowerProtectorBuild b, Boolean v) -> {
+            if (v != null) b.enabled = v;
+        });
 
         // 世界（重新）加载时依据已加载建筑重建队伍时间池注册表，避免跨存档污染。
         // WorldLoadEvent 在建筑构造（read 已执行、state 已恢复）之后触发，故既能保留
@@ -453,7 +465,8 @@ public class PowerProtector extends PowerGenerator {
 
             if (state.restoring) {
                 // 恢复会话中：连续缺口计时，达到阈值且电池确已耗尽才退出恢复（保护接管）
-                state.gapHold = surplusNow ? 0f : state.gapHold + Time.delta;
+                // 计时单位为秒(Time.delta 是 tick,除以 60),与 protectReturnTime 等阈值同刻度
+                state.gapHold = surplusNow ? 0f : state.gapHold + Time.delta / 60f;
                 if (state.debt <= 0f || !enabled || (batteriesEmpty && state.gapHold >= protectReturnTime)) {
                     state.restoring = false;
                     state.restoreHold = 0f;
@@ -464,7 +477,7 @@ public class PowerProtector extends PowerGenerator {
                 // 仅在保护已退出（!state.latching）后才允许进入，避免「保护中却同时进入恢复」的错乱
                 if (surplusNow && !state.latching && enabled && state.debt > 0f
                         && batteryRatio >= state.restoreBatteryPercent) {
-                    state.restoreHold += Time.delta;
+                    state.restoreHold += Time.delta / 60f;
                     if (state.restoreHold >= restoreEnterTime) {
                         state.restoring = true;
                         state.restoreHold = 0f;
@@ -494,7 +507,7 @@ public class PowerProtector extends PowerGenerator {
                 }
                 // 电网持续自足才确认退出；任何瞬时缺口都会重置确认计时。
                 else if (netSurplus >= 0f) {
-                    state.protectExitHold += Time.delta;
+                    state.protectExitHold += Time.delta / 60f;
                     if (state.protectExitHold >= protectExitTime) {
                         state.latching = false;
                         state.peakGap = 0f;
@@ -657,9 +670,18 @@ public class PowerProtector extends PowerGenerator {
         }
 
         /** 维护全队共享时间池：保护时按参与保护的保护器数扣减；全队无任何欠款才回充。
-         *  结果写入全局注册表，各保护器共用。 */
+         *  结果写入全局注册表，各保护器共用。
+         *  <p>幂等守卫：本方法被全队每台保护器（含禁用路径）每帧各调一次；若不拦截，
+         *  扣减/回充会按「调用次数 × 活动数」放大（N 台保护器 → N~N² 倍速）。
+         *  以池内时间戳保证每帧每队只真正结算一次，dt 即真实流逝 tick。 */
         private void manageTeamTimePool() {
             TeamPool tp = pool(team);
+
+            float dt = Time.time - tp.lastManageTime;
+            if (dt <= 0f) return; // 本帧已由其它保护器结算过
+            tp.lastManageTime = Time.time;
+            // 钳制单次结算量:世界加载后首帧或时间异常跳变时不得一次性扣光/回满
+            dt = Math.min(dt, 3f);
 
             float activeCnt = 0f;
             boolean anyDebt = false;
@@ -675,12 +697,12 @@ public class PowerProtector extends PowerGenerator {
 
             // 消耗：正在保护的每台保护器按 1x 速率扣减共享时间池
             if (activeCnt > 0f) {
-                tp.remainingProtectionTime = Math.max(0f, tp.remainingProtectionTime - activeCnt * Time.delta);
+                tp.remainingProtectionTime = Math.max(0f, tp.remainingProtectionTime - activeCnt * dt);
             }
 
             // 回充：全队无任何欠款且未满时线性恢复，每 restoreInterval 秒恢复 1 秒
             if (!anyDebt && tp.remainingProtectionTime < protectionTime) {
-                tp.remainingProtectionTime = Math.min(protectionTime, tp.remainingProtectionTime + Time.delta / restoreInterval);
+                tp.remainingProtectionTime = Math.min(protectionTime, tp.remainingProtectionTime + dt / restoreInterval);
             }
         }
 
@@ -761,24 +783,30 @@ public class PowerProtector extends PowerGenerator {
 
         /** 当前显示模式文案（与方块进度条共用） */
         public String modeText() {
-            return switch (state.mode) {
-                case Protecting -> Core.bundle.get("block.silicon-power-protector.protection");
-                case Recovering -> Core.bundle.get("block.silicon-power-protector.recovery");
-                case Stopped -> Core.bundle.get("block.silicon-power-protector.stopped");
-                case Error -> Core.bundle.get("block.silicon-power-protector.ui.errorConflict");
-                default -> Core.bundle.get("block.silicon-power-protector.normal");
-            };
+            // 传统 switch（箭头 switch 生成 SwitchBootstraps，Android DEX 不兼容）
+            String key;
+            switch (state.mode) {
+                case Protecting: key = "block.silicon-power-protector.protection"; break;
+                case Recovering: key = "block.silicon-power-protector.recovery"; break;
+                case Stopped: key = "block.silicon-power-protector.stopped"; break;
+                case Error: key = "block.silicon-power-protector.ui.errorConflict"; break;
+                default: key = "block.silicon-power-protector.normal"; break;
+            }
+            return Core.bundle.get(key);
         }
 
         /** 当前显示模式颜色 */
         public Color modeColor() {
-            return switch (state.mode) {
-                case Protecting -> Color.green;
-                case Recovering -> Color.cyan;
-                case Stopped -> Color.gray;
-                case Error -> Color.scarlet;
-                default -> Color.white;
-            };
+            // 传统 switch（箭头 switch 生成 SwitchBootstraps，Android DEX 不兼容）
+            Color c;
+            switch (state.mode) {
+                case Protecting: c = Color.green; break;
+                case Recovering: c = Color.cyan; break;
+                case Stopped: c = Color.gray; break;
+                case Error: c = Color.scarlet; break;
+                default: c = Color.white; break;
+            }
+            return c;
         }
 
         @Override
@@ -827,6 +855,7 @@ public class PowerProtector extends PowerGenerator {
             }).colspan(2).growX().padBottom(2f).row();
             inner.table(t -> {
                 // slider(min, max, step, value, listener)：step 固定 5%，value 为当前配置初始值
+                // 走 configure(tileConfig)才能联机作用于服务器(直改本地字段会被服务器快照覆盖)
                 restorePercentSlider = t.slider(0f, 1f, 0.05f, state.restoreBatteryPercent,
                         val -> configure(val)
                 ).left().growX().get();

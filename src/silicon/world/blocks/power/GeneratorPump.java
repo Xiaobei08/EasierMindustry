@@ -295,7 +295,14 @@ public class GeneratorPump extends LiquidBlock {
 
         @Override
         public boolean shouldConsume(){
-            return enabled && (amount != 0 || liquids.currentAmount() != 0) && power.status != 0;
+            // 自举守卫:本方块 outputsPower 且带非缓冲 consPower → 同时进 producers+consumers。
+            // 冷启动电网(本泵是第一台/唯一发电机)上 produced=0 → coverage=0 → status=0 →
+            // 永不泵水 → 永不发电,自举死锁,空电池也无济于事(存量 0 不放电)。
+            // 电网尚无任何产出时放行消费让泵转起来,此后正常按 status 门控。
+            boolean graphCold = power != null && power.graph != null
+                    && power.graph.getLastPowerProduced() <= 0.0001f;
+            return enabled && (amount != 0 || liquids.currentAmount() != 0)
+                    && (power.status != 0 || graphCold);
         }
 
         @Override

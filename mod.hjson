@@ -11,11 +11,11 @@ author: "Xiaobei"
 main: "silicon.Silicon"
 
 #the mod description as seen in the mod dialog
-description: "一个个人用的 Mindustry 模组，添加实用方块与功能：信号源与信号中继器（H 键查看信号覆盖）、物品传输中枢、万向交叉器、复合储物器、电力保护器、电力泵、卷扬发电机、矿机转换器、开关等。"
+description: "一个个人用的 Mindustry 模组，提供实用方块与便捷功能：\n\n· 物流：物品传输中枢（零缓冲跨网络自动调度）、万向交叉器（全局优先级 + 按方向覆盖）、两用交叉器、两用仓储\n· 电力：电力保护器、利滚利发电机、发电泵\n· 生产：矿物转换器\n· 信号系统：信号源 / 信号中继器（15 格正态衰减信号，H 键查看覆盖，需要供电）\n· 卫星系统：卫星发射中枢 + 卫星控制台，发射实体卫星入轨——轨道决定覆盖与燃油，信号可被干扰器压制，卫星随存档持久化（第一阶段）\n· 便捷功能：方块搜索、多人暂停、自动更新"
 
 
 #the mod version
-version: a0.12.4.4
+version: a0.13.0.0
 
 #the minimum game version required to run this mod
 minGameVersion: 155.4

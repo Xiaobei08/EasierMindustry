@@ -1,5 +1,13 @@
 # PowerProtector
 
+> [!WARNING]
+> **本文档描述的是旧版（v14 时代）架构,与当前代码（v19 重构后,对应 #44）严重脱节。**
+> 已失效的内容包括但不限于:per-grid 共享 State、Master/Blocked 模式、interest+surcharge
+> 回复公式、恢复速率 recoveryRatePerSecond、"同队伍多台→error"等概念——现行实现为
+> 独立 per-building State + 全队共享时间池 + netSurplus 偿还 + 任意队伍冲突即停机 +
+> lossMultiplier。准确行为以 `src/silicon/world/blocks/power/PowerProtector.java` 的
+> 类注释与实现为准,本文档待完整重写。
+
 ## 基本信息
 
 | 属性 | 值 |

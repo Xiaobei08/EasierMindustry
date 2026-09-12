@@ -78,6 +78,8 @@ public class Silicon extends Mod {
     @Override
     public void loadContent() {
         Items.load();
+        // 液体必须先于方块加载：方块构造函数中引用了 silicon.world.Liquids.lubricant
+        silicon.world.Liquids.load();
         Blocks.load();
         SiliconLog.info("Loading contents.");
     }
